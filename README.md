@@ -1,12 +1,12 @@
-# Google Drive plugin for Far Manager 3
+# Google Drive plugin for Far Manager 3 𓆈
 
 Mounts your Google Drive as a Far Manager panel. Native C++ (x64), talks to the
 Google Drive REST API v3 directly through WinHTTP, signs in with OAuth 2.0
 (loopback + PKCE). No external tools or runtimes needed.
 
-## Features
+## Features   𓆟
 
-| Key / action              | What it does                                                        |
+| Key / action              | function                                                            |
 |---------------------------|---------------------------------------------------------------------|
 | F11, `gdrive:`, Alt+F1/F2 | Open the Drive panel (`gdrive:Folder\Sub` jumps to a folder)        |
 | F5 / F6                   | Copy / move Drive -> local and local -> Drive (folders recursively) |
@@ -43,15 +43,15 @@ Any of these opens Google Drive in the active panel:
 - **F9 -> Left / Right -> Change drive -> Google Drive**.
 - **Alt+F1 / Alt+F2** (drive menu). On many laptops the F-keys are media keys
   unless **Fn** is held, so use **Fn+Alt+F1** or toggle Fn Lock (often Fn+Esc).
-  Windows Terminal or GPU overlay hotkeys can also swallow Alt+F-keys.
+  Windows Terminal or GPU overlay hotkeys can also swallow Alt+F-keys. 𓆌
 
-## Signing in
+## Signing in  𓄿
 
 The first time you open the panel the plugin asks to sign in. Your browser
-opens the Google login; approve the Drive permission and return to Far.
+opens the Google login. Approve the Drive permission and return to Far.
 
 If the release you installed was built with a built-in Google client (official
-releases are), that is all. Because the plugin is not verified by Google you
+releases are), you are done. Because the plugin is not verified by Google you
 will see a **"Google hasn't verified this app"** page: click **Advanced**, then
 **Go to <app name> (unsafe)**, then allow. The wording is Google's; the plugin
 only ever talks to Google's own servers from your PC.
@@ -86,7 +86,7 @@ Tokens are stored in `%FARPROFILE%\PluginsData\GoogleDrive\config.json`
   settings** (docx/odt/rtf/pdf/txt/html/epub/md, xlsx/ods/csv/tsv/pdf,
   pptx/odp/pdf).
 
-## Bring your own OAuth client
+## Bring your own OAuth client  𓆤
 
 Google requires every app that uses the Drive API to identify itself with an
 OAuth client. Official releases carry one, but you can use your own: it removes
@@ -96,7 +96,7 @@ The direct links open the right page once a project is selected in the
 dropdown at the top.
 
 1. **Project and API.** Go to <https://console.cloud.google.com/>, create a
-   project (any name), then open
+   project (any name), then open                       
    <https://console.cloud.google.com/apis/library/drive.googleapis.com> and
    click **Enable**. (The "APIs & services" overview only lists APIs that are
    already enabled, so Drive is not visible there until this step is done.)
@@ -118,7 +118,7 @@ While your consent screen is in *Testing* status Google expires the sign-in
 after 7 days. Click **Publish app** on the Audience page to avoid that; the
 app keeps working, you just see the unverified warning at each sign-in.
 
-## Building
+## Building 𓃥
 
 Requires the MSYS2 UCRT64 toolchain (`C:\msys64\ucrt64\bin\g++.exe`, GCC 14).
 
@@ -144,7 +144,7 @@ g++ -std=c++20 -O1 -DUNICODE -D_UNICODE -static -I third_party -o test\test_host
 test\test_host.exe out\GoogleDrive\GoogleDrive.dll
 ```
 
-### Releasing
+### Releasing  𓆚  𓆚  𓆚
 
 The GitHub Actions workflow in `.github/workflows/build.yml` builds and tests
 every push. Pushing a tag `vX.Y.Z.W` additionally creates a GitHub release
@@ -152,7 +152,7 @@ with the zip attached. Add the repository secrets `GDRIVE_CLIENT_ID` and
 `GDRIVE_CLIENT_SECRET` to have the built-in client compiled into releases.
 Bump the version in `src/version.h` and add a `CHANGELOG.md` entry first.
 
-## Layout
+## Layout  𓃹
 
 ```
 src/GoogleDrive.cpp   Far plugin: panel, dialogs, file operations
@@ -169,18 +169,18 @@ test/test_host.cpp    smoke tests
 third_party/          Far PluginSDK headers (plugin.hpp, DlgBuilder.hpp), nlohmann/json
 ```
 
-## Known limitations
+## Known limitations  𓆑
 
 - Drive allows several files with the same name in one folder; the panel shows
   the duplicates as `name (2).ext`, `name (3).ext`.
 - Google-native files (Docs/Sheets/Slides/Drawings) can only be exported, and
-  only up to 10 MB (a Drive API limit). Forms, Sites and Maps cannot be exported.
+  only up to 10 MB (drive API limit). Forms, Sites and Maps cannot be exported (😔). 
 - Editing a Google Doc with F4 and saving uploads plain text back into the
   document (Drive converts it); use it for quick notes, not for formatted docs.
 - No copy/move *between* two Drive folders inside the plugin (Far has no
   plugin-to-plugin copy); download to local and upload instead.
-- Only English UI strings are included.
+- Only English UI strings are included. 𓅣
 
-## License
+## License 𓆏
 
 MIT, see `LICENSE`. Third-party components are listed in `THIRD_PARTY_NOTICES.md`.
