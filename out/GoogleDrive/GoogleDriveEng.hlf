@@ -1,0 +1,64 @@
+.Language=English,English
+.PluginContents=Google Drive
+
+@Contents
+$ #Google Drive plugin#
+ Shows your Google Drive as a Far Manager panel.
+
+ Open it from the Disks menu (Alt+F1 / Alt+F2), the Plugins menu (F11)
+or by typing #gdrive:# or #gdrive:Folder\Subfolder# on the command line.
+
+ ^<wrap>#Keys#
+ F5 / F6      copy / move files between Google Drive and a local panel
+ F7           create a folder on Google Drive
+ F8           move to Trash (or delete permanently - see ~settings~@Config@)
+ Shift+F6     rename the current file or folder
+ Alt+F7       search inside Google Drive
+ Ctrl+Shift+0..9  save the current Drive folder as a folder shortcut
+ Ctrl+L       show account and storage information
+ Esc          cancel a running transfer
+
+ ^<wrap>#Google Docs / Sheets / Slides#
+ Native Google documents have no binary content, so they are exported
+when copied. The export formats are chosen in ~settings~@Config@
+(default: docx, xlsx, pptx).
+
+ ^<wrap>#Special folders#
+ #Shared with me# lists files other people shared with you.
+ #Trash# lists trashed files; deleting there is permanent.
+
+@Config
+$ #Google Drive settings#
+ #OAuth client ID / secret#
+ The plugin talks to Google directly, so it needs its own OAuth client:
+ 1. Open https://console.cloud.google.com/ and create (or pick) a project.
+ 2. Enable the Drive API:
+    https://console.cloud.google.com/apis/library/drive.googleapis.com
+ 3. Consent screen: https://console.cloud.google.com/auth/overview ->
+    Get started -> app name + your e-mail -> Audience: External -> Create.
+ 4. Test users: https://console.cloud.google.com/auth/audience ->
+    Add users -> your Gmail.
+ 5. Client: https://console.cloud.google.com/auth/clients -> Create client
+    -> Application type: #Desktop app#. Copy the client ID and secret.
+ 6. Paste both into this dialog (Shift+Ins pastes) and press #Sign in#.
+    Your browser opens; click Continue on the "unverified app" warning and
+    allow access. Tokens are stored in
+    %FARPROFILE%\PluginsData\GoogleDrive\config.json.
+
+ While the consent screen is in Testing status the sign-in expires after
+7 days; click "Publish app" on the Audience page to avoid that.
+
+ ^<wrap>#Opening the panel#
+ F11 -> Google Drive, or type gdrive: on the command line, or
+F9 -> Left/Right -> Change drive. Alt+F1/Alt+F2 also work unless the
+laptop F-keys need Fn.
+
+ #Move deleted files to Trash#
+ When on, F8 moves files to the Drive Trash. When off, F8 deletes them
+permanently.
+
+ #Export formats#
+ Extensions used when Google Docs, Sheets and Slides are copied to a local
+disk: docx/odt/rtf/pdf/txt/html/epub/md, xlsx/ods/csv/tsv/pdf, pptx/odp/pdf.
+
+ ~Contents~@Contents@
