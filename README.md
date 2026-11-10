@@ -28,8 +28,8 @@ retry. Large files stream to/from disk; file modification times are preserved.
 
 Requirements: Far Manager 3 x64, build 6000 or newer (2022+).
 
-1. Download `GoogleDrive-<version>-x64.zip` from the Releases page.
-2. Extract it so that you get `<Far folder>\Plugins\GoogleDrive\GoogleDrive.dll`
+1. Download `GoogleDrive-<version>-x64.zip` from the [Releases page](https://github.com/cubicalobject/farDrive/releases).
+2. 2. Extract it so that you get `<Far folder>\Plugins\GoogleDrive\GoogleDrive.dll`
    (the zip contains the `GoogleDrive` folder; drop it into `Plugins`).
 3. Restart Far.
 
@@ -140,7 +140,7 @@ Smoke tests (load the DLL like Far does, hit Google's public discovery
 endpoint, check the OAuth error path and the helper functions):
 
 ```
-g++ -std=c++20 -O1 -DUNICODE -D_UNICODE -static -I third_party -o test\test_host.exe test\test_host.cpp -lwinhttp -lws2_32 -lshell32 -lbcrypt
+g++ -std=c++20 -O1 -DUNICODE -D_UNICODE -static -I third_party -o test\test_host.exe test\test_host.cpp -lwinhttp -lws2_32 -lshell32 -lbcrypt -lcrypt32 -ladvapi32
 test\test_host.exe out\GoogleDrive\GoogleDrive.dll
 ```
 
@@ -165,7 +165,7 @@ src/version.h         plugin version and author
 src/GoogleDrive.def   exported Far entry points
 GoogleDriveEng.lng    UI strings (order must match the enum in GoogleDrive.cpp)
 GoogleDriveEng.hlf    F1 help
-test/test_host.cpp    smoke tests
+test/test_host.cpp    smoke and unit tests (fake HTTP transport)
 third_party/          Far PluginSDK headers (plugin.hpp, DlgBuilder.hpp), nlohmann/json
 ```
 
