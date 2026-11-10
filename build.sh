@@ -18,7 +18,7 @@ g++ -std=c++20 -O2 -DNDEBUG -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 "${DEFS[@
     -shared -static -static-libgcc -static-libstdc++ \
     -I third_party \
     -o "$OUT/GoogleDrive.dll" src/GoogleDrive.cpp src/GoogleDrive.def \
-    -lwinhttp -lws2_32 -lshell32 -lbcrypt -lole32 -s
+    -lwinhttp -lws2_32 -lshell32 -lbcrypt -lcrypt32 -ladvapi32 -lole32 -s
 
 cp GoogleDriveEng.lng GoogleDriveEng.hlf LICENSE "$OUT/"
 cp CHANGELOG.md "$OUT/changelog.md"

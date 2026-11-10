@@ -1,0 +1,16 @@
+# build output
+out/
+*.o
+*.obj
+*.exe
+*.pdb
+
+# test artefacts
+test/far_probe.txt
+test/profile/
+test/run.log
+
+# local overrides / secrets (never commit a client secret)
+*.local.*
+default_client.json
+issues.txt

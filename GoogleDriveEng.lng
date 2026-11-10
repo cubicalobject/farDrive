@@ -112,3 +112,7 @@
 "built-in client"
 // MSignInNow
 "You are not signed in to Google Drive yet. Sign in now (opens your browser)?"
+// MFolderLoop
+"Folder loop (shortcut/junction) not followed:"
+// MNotMovedSkipped
+"Items that were not fully copied were left on Google Drive."

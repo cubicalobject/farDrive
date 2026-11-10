@@ -1,0 +1,57 @@
+# Builds the plugin on every push/PR, runs the smoke tests, and attaches a zip to GitHub releases
+# when a tag like v1.0.0.1 is pushed.
+#
+# Repository secrets (Settings -> Secrets and variables -> Actions), both optional:
+#   GDRIVE_CLIENT_ID      OAuth "Desktop app" client ID compiled into release builds
+#   GDRIVE_CLIENT_SECRET  its client secret
+# Without them the plugin still works; users enter their own client in the settings dialog.
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc zip
+
+      - name: Build and package
+        env:
+          BUILTIN_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          BUILTIN_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+        run: ./build.sh package
+
+      - name: Smoke tests
+        run: |
+          g++ -std=c++20 -O1 -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 -static -I third_party \
+              -o test/test_host.exe test/test_host.cpp -lwinhttp -lws2_32 -lshell32 -lbcrypt -lcrypt32 -ladvapi32
+          ./test/test_host.exe out/GoogleDrive/GoogleDrive.dll
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GoogleDrive-x64
+          path: out/GoogleDrive-*-x64.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/GoogleDrive-*-x64.zip
+          generate_release_notes: true

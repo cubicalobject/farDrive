@@ -12,6 +12,7 @@
 
 #include <memory>
 #include <map>
+#include <set>
 #include <algorithm>
 #include <cwchar>
 
@@ -87,6 +88,8 @@ enum
 	MBuiltinHint,
 	MStatusBuiltin,
 	MSignInNow,
+	MFolderLoop,
+	MNotMovedSkipped,
 };
 
 // ---------------------------------------------------------------------------
@@ -154,7 +157,8 @@ static void ShowInfo(const std::wstring& title, const std::wstring& text)
 	Message(FMSG_MB_OK, MsgGuid, lines);
 }
 
-// Drains console input and reports whether Esc was pressed.
+// Drains console input and reports whether Esc was pressed. Draining (rather than peeking) is
+// deliberate: keys typed during a long transfer must not be replayed into Far afterwards.
 static bool CheckForEsc()
 {
 	HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
@@ -238,13 +242,36 @@ private:
 
 static void ThrowIfCancelled(bool ok) { if (!ok) throw GdCancel{}; }
 
+// Creates the HTTP client on demand (its constructor can fail); reports the error once asked.
+static bool EnsureHttp()
+{
+	if (g_http) return true;
+	try
+	{
+		g_http = std::make_unique<HttpClient>();
+		g_drive = std::make_unique<Drive>(g_cfg, *g_http);
+		return true;
+	}
+	catch (const std::exception& e)
+	{
+		ShowError(std::string("WinHTTP could not be initialised: ") + e.what());
+		return false;
+	}
+}
+
+static void SaveConfigReporting()
+{
+	try { g_cfg.save(); }
+	catch (const std::exception& e) { ShowError(e.what()); }
+}
+
 // ---------------------------------------------------------------------------
 // panel
 // ---------------------------------------------------------------------------
 struct Entry : DriveFile
 {
-	std::wstring display;   // name shown in the panel (unique within the folder)
-	bool pseudo = false;    // "Shared with me" / "Trash"
+	std::wstring display;   // name shown in the panel (unique within the folder, file-system safe)
+	bool pseudo = false;    // "Shared with me" / "Shared drives" / "Trash"
 };
 
 struct Level
@@ -265,13 +292,25 @@ public:
 	// writes are not allowed in Trash or directly in the "Shared with me" / "Shared drives" lists
 	bool canWrite() const { return !inTrash() && curId() != kSharedId && curId() != kDrivesId; }
 
-	void invalidate() { m_entriesFor = "\x01"; }
+	void invalidate() { m_entriesFor = "\x01"; m_fresh = false; }
 
+	// Listing for lookups (F5/F8/chdir): reuse what the panel currently shows.
 	void ensureEntries()
 	{
 		if (m_entriesFor == curId()) return;
 		m_entries = fetch(curId());
 		m_entriesFor = curId();
+		m_fresh = true;
+	}
+
+	// Listing for display (GetFindData): re-read unless the cache was filled since the last
+	// display, so Ctrl+R and Far's automatic refresh pick up changes made elsewhere.
+	void refreshForDisplay()
+	{
+		if (m_entriesFor == curId() && m_fresh) { m_fresh = false; return; }
+		m_entries = fetch(curId());
+		m_entriesFor = curId();
+		m_fresh = false;
 	}
 
 	std::vector<Entry> fetch(const std::string& id)
@@ -294,26 +333,19 @@ public:
 				pseudo(kTrashId, MTrashFolder);
 			}
 		}
-		std::map<std::wstring, int> seen;
-		for (auto& e : out) seen[lower(e.display)] = 1;
+		// Panel names double as local file names (F3/F4 temp files), so they are sanitised, and
+		// they must be unique because Far hands items back to us by name.
+		std::vector<std::pair<std::wstring, bool>> names;
+		for (auto& e : out) names.emplace_back(e.display, true);
+		for (auto& f : files) names.emplace_back(sanitize_filename(utf8_to_wide(f.name)), f.isFolder());
+		std::vector<std::wstring> uniq = unique_display_names(names);
+		size_t i = 0;
+		for (auto& e : out) e.display = uniq[i++];
 		for (auto& f : files)
 		{
 			Entry e;
 			static_cast<DriveFile&>(e) = f;
-			// panel names double as local file names (F3/F4 temp files), so keep them file-system safe
-			std::wstring name = sanitize_filename(utf8_to_wide(f.name));
-			std::wstring key = lower(name);
-			int& cnt = seen[key];
-			if (cnt++ > 0)
-			{
-				// make duplicates distinguishable: "name (2).ext"
-				size_t dot = name.find_last_of(L'.');
-				std::wstring suffix = L" (" + std::to_wstring(cnt) + L")";
-				if (dot != std::wstring::npos && dot > 0 && !f.isFolder()) name.insert(dot, suffix);
-				else name += suffix;
-				seen[lower(name)] = 1;
-			}
-			e.display = name;
+			e.display = uniq[i++];
 			out.push_back(std::move(e));
 		}
 		return out;
@@ -364,7 +396,7 @@ public:
 		if (m_aboutLoaded && !m_about.email.empty() && g_cfg.account_email != m_about.email)
 		{
 			g_cfg.account_email = m_about.email;
-			g_cfg.save();
+			try { g_cfg.save(); } catch (...) {}
 		}
 		updateStrings();
 	}
@@ -415,8 +447,6 @@ public:
 	std::vector<Entry> m_entries;
 
 private:
-	static std::wstring lower(std::wstring s) { for (auto& c : s) c = (wchar_t)towlower(c); return s; }
-
 	void updateStrings()
 	{
 		m_curDir.clear();
@@ -442,6 +472,7 @@ private:
 
 	std::vector<Level> m_path;
 	std::string m_entriesFor = "\x01";
+	bool m_fresh = false;
 	std::wstring m_title, m_curDir, m_shortcut;
 	std::wstring m_infoAccount, m_infoUsed, m_infoLimit, m_infoFolder;
 	std::vector<InfoPanelLine> m_info;
@@ -454,6 +485,7 @@ private:
 // ---------------------------------------------------------------------------
 static bool DoSignIn()
 {
+	if (!EnsureHttp()) return false;
 	std::vector<std::wstring> lines{ M(MTitle), M(MSignInWaiting), M(MSignInEsc) };
 	HANDLE scr = PSI.SaveScreen(0, 0, -1, -1);
 	Message(FMSG_LEFTALIGN, ProgressGuid, lines);
@@ -541,15 +573,19 @@ static intptr_t ShowConfig()
 		g_cfg.export_doc = ext(expDoc, "docx");
 		g_cfg.export_sheet = ext(expSheet, "xlsx");
 		g_cfg.export_slides = ext(expSlides, "pptx");
-		g_cfg.save();
+		SaveConfigReporting();
 		changed = true;
 
 		if (r == 2) return 1;
 		if (r == 0) DoSignIn();
-		else if (r == 1)
+		else if (r == 1 && EnsureHttp())
 		{
-			oauth::sign_out(g_cfg, *g_http);
-			ShowInfo(M(MTitle), M(MSignedOut));
+			try
+			{
+				oauth::sign_out(g_cfg, *g_http);
+				ShowInfo(M(MTitle), M(MSignedOut));
+			}
+			catch (const std::exception& e) { ShowError(e.what()); }
 		}
 	}
 }
@@ -576,7 +612,12 @@ static int AskOverwrite(const std::wstring& name, Overwrite& mode)
 	}
 }
 
-struct OpStats { int skipped = 0; std::wstring firstSkipReason; };
+struct OpStats
+{
+	int skipped = 0;
+	std::wstring firstSkipReason;
+	void skip(const std::wstring& reason) { ++skipped; if (firstSkipReason.empty()) firstSkipReason = reason; }
+};
 
 // Plain-text-ish export used when a Google document is opened with F3/F4.
 static const char* ViewExportExt(const std::string& mime)
@@ -587,22 +628,34 @@ static const char* ViewExportExt(const std::string& mime)
 	return nullptr;
 }
 
+// Downloads one panel entry (recursively for folders). Returns true only when the entry and all
+// of its children were copied; the caller must not delete (move) anything that returns false.
 // viewMode: F3/F4/QuickView - the local name must equal the panel name, so no extension is added.
-static void DownloadEntry(Panel& p, const Entry& e, const std::wstring& destDir, Progress& prog, Overwrite& ow, OpStats& st, bool viewMode)
+// visited: folder ids already entered in this operation (shortcuts can form cycles).
+static bool DownloadEntry(Panel& p, const Entry& e, const std::wstring& destDir, Progress& prog, Overwrite& ow,
+	OpStats& st, bool viewMode, std::set<std::string>& visited)
 {
 	std::wstring local = destDir + L"\\" + e.display;
 	if (e.isFolder())
 	{
-		CreateDirectoryW(local.c_str(), nullptr);
+		std::string fid = e.pseudo ? e.id : e.effectiveId();
+		if (!visited.insert(fid).second)
+		{
+			st.skip(std::wstring(M(MFolderLoop)) + L" " + e.display);
+			return false;
+		}
+		if (!CreateDirectoryW(long_path(local).c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+			throw GdError("Cannot create folder " + wide_to_utf8(local) + ": " + wide_to_utf8(win_error_text(GetLastError())));
 		ThrowIfCancelled(prog.update(e.display, L"", 0, 0, true));
-		for (auto& child : p.fetch(e.pseudo ? e.id : e.effectiveId()))
-			DownloadEntry(p, child, local, prog, ow, st, viewMode);
-		return;
+		bool complete = true;
+		for (auto& child : p.fetch(fid))
+			if (!DownloadEntry(p, child, local, prog, ow, st, viewMode, visited)) complete = false;
+		return complete;
 	}
 	DriveFile f = e;
 	if (f.isShortcut)
 	{
-		// shortcut to a file: fetch the real metadata (size, times)
+		// shortcut to a file: fetch the real metadata (size, times, md5)
 		try { DriveFile t = g_drive->get(f.targetId); t.name = f.name; f = t; } catch (...) {}
 	}
 	const char* exportOverride = nullptr;
@@ -612,22 +665,22 @@ static void DownloadEntry(Panel& p, const Entry& e, const std::wstring& destDir,
 		if (viewMode && ViewExportExt(f.effectiveMime())) { exportOverride = ViewExportExt(f.effectiveMime()); ext = exportOverride; }
 		if (ext.empty() || !export_mime_for_ext(ext))
 		{
-			st.skipped++;
-			if (st.firstSkipReason.empty()) st.firstSkipReason = std::wstring(M(MNotExportable)) + L" " + e.display;
-			return;
+			st.skip(std::wstring(M(MNotExportable)) + L" " + e.display);
+			return false;
 		}
 		std::wstring wext = L"." + utf8_to_wide(ext);
 		if (!viewMode && (local.size() < wext.size() || _wcsicmp(local.c_str() + local.size() - wext.size(), wext.c_str()) != 0))
 			local += wext;
 	}
-	if (!viewMode && GetFileAttributesW(local.c_str()) != INVALID_FILE_ATTRIBUTES)
+	if (!viewMode && GetFileAttributesW(long_path(local).c_str()) != INVALID_FILE_ATTRIBUTES)
 	{
-		if (!AskOverwrite(local, ow)) { st.skipped++; return; }
+		if (!AskOverwrite(local, ow)) { st.skip(L""); return false; }
 	}
 	ThrowIfCancelled(prog.update(e.display, local, 0, f.size, true));
 	g_drive->download(f, local, [&](uint64_t done, uint64_t total) {
 		return prog.update(e.display, local, done, total ? total : f.size);
 	}, exportOverride);
+	return true;
 }
 
 static void DeleteEntry(Panel& p, const Entry& e)
@@ -671,25 +724,35 @@ static void UploadPath(const std::wstring& localPath, const std::wstring& name, 
 			folderId = created.id;
 		}
 		WIN32_FIND_DATAW fd;
-		HANDLE h = FindFirstFileW((localPath + L"\\*").c_str(), &fd);
+		HANDLE h = FindFirstFileW(long_path(localPath + L"\\*").c_str(), &fd);
+		bool complete = true;
 		if (h != INVALID_HANDLE_VALUE)
 		{
 			struct Closer { HANDLE h; ~Closer() { FindClose(h); } } c{ h };
 			do
 			{
 				if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
-				UploadPath(localPath + L"\\" + fd.cFileName, fd.cFileName, folderId,
-					(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0, move, cache, prog, ow, st);
+				bool sub = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+				if (sub && (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+				{
+					// junctions / symlinked folders can loop; they are not followed
+					st.skip(std::wstring(M(MFolderLoop)) + L" " + fd.cFileName);
+					complete = false;
+					continue;
+				}
+				int before = st.skipped;
+				UploadPath(localPath + L"\\" + fd.cFileName, fd.cFileName, folderId, sub, move, cache, prog, ow, st);
+				if (st.skipped != before) complete = false;
 			} while (FindNextFileW(h, &fd));
 		}
-		if (move) RemoveDirectoryW(localPath.c_str());
+		if (move && complete) RemoveDirectoryW(long_path(localPath).c_str());
 		return;
 	}
 
 	std::string existingId;
 	if (const DriveFile* f = FindChild(Children(cache, parentId), uname, false))
 	{
-		if (!AskOverwrite(name, ow)) { st.skipped++; return; }
+		if (!AskOverwrite(name, ow)) { st.skip(L""); return; }
 		existingId = f->effectiveId();
 	}
 	ThrowIfCancelled(prog.update(name, localPath, 0, 0, true));
@@ -697,7 +760,7 @@ static void UploadPath(const std::wstring& localPath, const std::wstring& name, 
 		return prog.update(name, localPath, done, total);
 	});
 	if (existingId.empty()) cache[parentId].push_back(up);
-	if (move) DeleteFileW(localPath.c_str());
+	if (move) DeleteFileW(long_path(localPath).c_str());
 }
 
 static void ReportSkipped(const OpStats& st)
@@ -733,9 +796,13 @@ void WINAPI SetStartupInfoW(const PluginStartupInfo* info)
 	size_t slash = g_pluginDir.find_last_of(L'\\');
 	if (slash != std::wstring::npos) g_pluginDir.resize(slash);
 
-	wchar_t profile[MAX_PATH] = {};
-	if (GetEnvironmentVariableW(L"FARPROFILE", profile, MAX_PATH) && profile[0])
-		g_cfg.file = std::wstring(profile) + L"\\PluginsData\\GoogleDrive\\config.json";
+	// Settings live in the Far profile; fall back to the roaming profile location, and only
+	// as a last resort to the plugin folder (which may be read-only under Program Files).
+	wchar_t buf[MAX_PATH] = {};
+	if (GetEnvironmentVariableW(L"FARPROFILE", buf, MAX_PATH) && buf[0])
+		g_cfg.file = std::wstring(buf) + L"\\PluginsData\\GoogleDrive\\config.json";
+	else if (GetEnvironmentVariableW(L"APPDATA", buf, MAX_PATH) && buf[0])
+		g_cfg.file = std::wstring(buf) + L"\\Far Manager\\Profile\\PluginsData\\GoogleDrive\\config.json";
 	else
 		g_cfg.file = g_pluginDir + L"\\config.json";
 	g_cfg.load();
@@ -745,7 +812,7 @@ void WINAPI SetStartupInfoW(const PluginStartupInfo* info)
 		g_http = std::make_unique<HttpClient>();
 		g_drive = std::make_unique<Drive>(g_cfg, *g_http);
 	}
-	catch (...) {}
+	catch (...) {}   // reported later by EnsureHttp() when the user actually needs it
 }
 
 void WINAPI GetPluginInfoW(PluginInfo* info)
@@ -779,11 +846,7 @@ intptr_t WINAPI ConfigureW(const ConfigureInfo*)
 
 HANDLE WINAPI OpenW(const OpenInfo* info)
 {
-	if (!g_http)
-	{
-		ShowError(L"WinHTTP could not be initialised");
-		return nullptr;
-	}
+	if (!EnsureHttp()) return nullptr;
 	if (!g_cfg.signed_in())
 	{
 		if (g_cfg.has_client())
@@ -827,11 +890,10 @@ HANDLE WINAPI OpenW(const OpenInfo* info)
 			ShowError(L"Folder not found: " + target);
 		}
 		try { p->ensureEntries(); }
-		catch (const GdError& e)
+		catch (const GdError&)
 		{
 			if (info->OpenFrom != OPEN_SHORTCUT) throw;
 			p->toRoot();          // stale shortcut: fall back to root
-			(void)e;
 			p->ensureEntries();
 		}
 		p->loadAbout();
@@ -863,7 +925,7 @@ intptr_t WINAPI GetFindDataW(GetFindDataInfo* info)
 			prog.reset(new Progress(M(MReading), true));
 			prog->update(L"", L"", 0, 0, true);
 		}
-		p->ensureEntries();
+		p->refreshForDisplay();
 	}
 	catch (const GdCancel&) { return FALSE; }
 	catch (const std::exception& e)
@@ -933,25 +995,28 @@ intptr_t WINAPI GetFilesW(GetFilesInfo* info)
 	try
 	{
 		Progress prog(M(MDownloading), showUi);
-		std::vector<const Entry*> done;
+		std::set<std::string> visited{ p->curId() };
+		std::vector<const Entry*> copied;     // fully copied items - the only ones a move may delete
+		bool anySkipped = false;
 		for (size_t i = 0; i < info->ItemsNumber; ++i)
 		{
 			const wchar_t* name = info->PanelItem[i].FileName;
 			if (!name || !wcscmp(name, L"..")) continue;
 			const Entry* e = p->find(name);
 			if (!e) continue;
-			DownloadEntry(*p, *e, dest, prog, ow, st, viewMode);
-			done.push_back(e);
+			if (DownloadEntry(*p, *e, dest, prog, ow, st, viewMode, visited)) copied.push_back(e);
+			else anySkipped = true;
 		}
 		if (info->Move)
 		{
 			prog.setTitle(M(MDeleting));
-			for (auto* e : done)
+			for (auto* e : copied)
 			{
 				ThrowIfCancelled(prog.update(e->display, L"", 0, 0, true));
 				DeleteEntry(*p, *e);
 			}
 			p->invalidate();
+			if (anySkipped) st.skip(M(MNotMovedSkipped));
 		}
 	}
 	catch (const GdCancel&) { if (info->Move) p->invalidate(); return -1; }
@@ -970,11 +1035,8 @@ intptr_t WINAPI PutFilesW(const PutFilesInfo* info)
 	Panel* p = (Panel*)info->hPanel;
 	if (info->ItemsNumber == 0) return 0;
 	bool silent = (info->OpMode & OPM_SILENT) != 0;
-	if (!p->canWrite())
-	{
-		if (!silent) ShowError(M(MNotAllowedHere));
-		return 0;
-	}
+	bool editMode = (info->OpMode & OPM_EDIT) != 0;   // F4 save: the temp file carries the panel name
+
 	std::wstring src = info->SrcPath ? info->SrcPath : L"";
 	if (src.empty())
 	{
@@ -1002,8 +1064,34 @@ intptr_t WINAPI PutFilesW(const PutFilesInfo* info)
 			std::wstring local = (name[1] == L':' || name[0] == L'\\') ? std::wstring(name) : src + L"\\" + name;
 			std::wstring base = local.substr(local.find_last_of(L'\\') + 1);
 			DWORD attr = info->PanelItem[i].FileAttributes;
-			if (attr == INVALID_FILE_ATTRIBUTES || attr == 0) attr = GetFileAttributesW(local.c_str());
-			UploadPath(local, base, p->curId(), (attr & FILE_ATTRIBUTE_DIRECTORY) != 0, info->Move != 0, cache, prog, ow, st);
+			if (attr == INVALID_FILE_ATTRIBUTES || attr == 0) attr = GetFileAttributesW(long_path(local).c_str());
+			bool isDir = (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+
+			if (editMode && !isDir)
+			{
+				// Map the edited temp file back to the Drive file it was opened from, so a
+				// sanitised/de-duplicated panel name or an exported Google Doc updates the
+				// original instead of creating a new file next to it.
+				if (const Entry* e = p->find(base.c_str()); e && !e->isFolder() && !e->pseudo)
+				{
+					std::string mime;
+					if (e->isGoogleDoc())
+					{
+						const char* ext = ViewExportExt(e->effectiveMime());
+						if (ext) mime = export_mime_for_ext(ext);
+					}
+					ThrowIfCancelled(prog.update(e->display, local, 0, 0, true));
+					g_drive->upload(p->curId(), e->name, local, e->effectiveId(),
+						[&](uint64_t done, uint64_t total) { return prog.update(e->display, local, done, total); }, mime);
+					continue;
+				}
+			}
+			if (!p->canWrite())
+			{
+				if (!silent) ShowError(M(MNotAllowedHere));
+				return 0;
+			}
+			UploadPath(local, base, p->curId(), isDir, info->Move != 0, cache, prog, ow, st);
 		}
 	}
 	catch (const GdCancel&) { p->invalidate(); return -1; }

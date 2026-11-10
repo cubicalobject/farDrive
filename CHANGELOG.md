@@ -14,3 +14,8 @@ First release.
   and Esc to cancel.
 - OAuth 2.0 sign-in (loopback + PKCE). Optional built-in client; users can
   also enter their own client ID/secret.
+- Downloads go to a `.part` file, are MD5-verified and only then replace the
+  local file; a move (F6) never deletes items that were not fully copied.
+- Tokens and the client secret are stored DPAPI-protected (current user).
+- Rate-limit (403/429) and transient errors are retried with back-off;
+  folder creation is duplicate-safe on retry.

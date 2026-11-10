@@ -59,10 +59,42 @@ inline const char* export_mime_for_ext(const std::string& ext)
 	return nullptr;
 }
 
+// Lower-case hex MD5 of a file (BCrypt). Empty string on failure.
+inline std::string md5_file(const std::wstring& path)
+{
+	HANDLE h = CreateFileW(long_path(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (h == INVALID_HANDLE_VALUE) return {};
+	struct Closer { HANDLE h; ~Closer() { CloseHandle(h); } } closer{ h };
+	BCRYPT_ALG_HANDLE alg = nullptr;
+	if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_MD5_ALGORITHM, nullptr, 0) != 0) return {};
+	BCRYPT_HASH_HANDLE hh = nullptr;
+	std::string out;
+	if (BCryptCreateHash(alg, &hh, nullptr, 0, nullptr, 0, 0) == 0)
+	{
+		std::vector<unsigned char> buf(1 << 20);
+		DWORD got = 0;
+		bool ok = true;
+		while (ReadFile(h, buf.data(), (DWORD)buf.size(), &got, nullptr) && got)
+			if (BCryptHashData(hh, buf.data(), got, 0) != 0) { ok = false; break; }
+		unsigned char hash[16];
+		if (ok && BCryptFinishHash(hh, hash, sizeof hash, 0) == 0)
+		{
+			static const char* hex = "0123456789abcdef";
+			for (unsigned char b : hash) { out += hex[b >> 4]; out += hex[b & 15]; }
+		}
+		BCryptDestroyHash(hh);
+	}
+	BCryptCloseAlgorithmProvider(alg, 0);
+	return out;
+}
+
 class Drive
 {
 public:
-	Drive(Config& cfg, HttpClient& http) : m_cfg(cfg), m_http(http) {}
+	Drive(Config& cfg, IHttp& http) : m_cfg(cfg), m_http(http) {}
+
+	int retryBaseMs = 500;     // first back-off; doubles per attempt (tests set 0)
+	int maxAttempts = 4;
 
 	// --- metadata -----------------------------------------------------------
 
@@ -78,7 +110,8 @@ public:
 				+ "&orderBy=" + url_encode(orderBy);
 			if (!pageToken.empty()) url += "&pageToken=" + url_encode(pageToken);
 			json j = call(L"GET", url);
-			for (auto& f : j["files"]) out.push_back(parse(f));
+			if (j.contains("files"))
+				for (auto& f : j["files"]) out.push_back(parse(f));
 			pageToken = j.value("nextPageToken", "");
 		} while (!pageToken.empty());
 		return out;
@@ -144,11 +177,28 @@ public:
 		return a;
 	}
 
+	// Creates a folder. A POST is not idempotent and Drive allows duplicate names, so after a
+	// failed/uncertain attempt we look for a folder with that name before retrying.
 	DriveFile createFolder(const std::string& parentId, const std::string& name)
 	{
 		json body{ {"name", name}, {"mimeType", kMimeFolder}, {"parents", json::array({parentId})} };
-		return parse(call(L"POST", std::string(kApiBase) + "files?fields=" + url_encode(kFileFields) + "&supportsAllDrives=true",
-			body.dump(), "application/json; charset=UTF-8"));
+		std::string url = std::string(kApiBase) + "files?fields=" + url_encode(kFileFields) + "&supportsAllDrives=true";
+		for (int attempt = 0;; ++attempt)
+		{
+			try
+			{
+				return parse(call(L"POST", url, body.dump(), "application/json; charset=UTF-8", /*retry*/false));
+			}
+			catch (const GdError& e)
+			{
+				bool uncertain = e.status == 0 || e.status == 429 || e.status >= 500 || e.status == 403;
+				if (!uncertain || attempt + 1 >= maxAttempts) throw;
+			}
+			backoff(attempt);
+			auto existing = list("'" + q_escape(parentId) + "' in parents and name = '" + q_escape(name)
+				+ "' and mimeType = '" + kMimeFolder + "' and trashed = false");
+			if (!existing.empty()) return existing.front();
+		}
 	}
 
 	void trash(const std::string& id)
@@ -185,14 +235,16 @@ public:
 		return "";
 	}
 
-	// Downloads (or exports) a file to localPath. Throws GdError / GdCancel.
-	// exportExtOverride forces a particular export format for Google-native documents.
+	// Downloads (or exports) a file to localPath. The data goes to "<localPath>.part" first and
+	// replaces the destination only after a complete, checksum-verified transfer, so a failed or
+	// cancelled download never destroys an existing local file. Throws GdError / GdCancel.
 	void download(const DriveFile& f, const std::wstring& localPath, const ProgressFn& progress,
 		const char* exportExtOverride = nullptr)
 	{
 		std::string id = f.effectiveId();
 		std::string url;
-		if (f.isGoogleDoc())
+		bool isExport = f.isGoogleDoc();
+		if (isExport)
 		{
 			std::string ext = exportExtOverride ? exportExtOverride : exportExtFor(f.effectiveMime());
 			const char* mime = ext.empty() ? nullptr : export_mime_for_ext(ext);
@@ -202,12 +254,14 @@ public:
 		else
 			url = std::string(kApiBase) + "files/" + url_encode(id) + "?alt=media&supportsAllDrives=true";
 
+		const std::wstring part = localPath + L".part";
+		const std::wstring lpPart = long_path(part);
 		for (int attempt = 0;; ++attempt)
 		{
 			oauth::ensure_token(m_cfg, m_http);
-			HANDLE h = CreateFileW(localPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+			HANDLE h = CreateFileW(lpPart.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 			if (h == INVALID_HANDLE_VALUE)
-				throw GdError("Cannot create " + wide_to_utf8(localPath) + ": " + wide_to_utf8(win_error_text(GetLastError())));
+				throw GdError("Cannot create " + wide_to_utf8(part) + ": " + wide_to_utf8(win_error_text(GetLastError())));
 			HttpResponse resp;
 			try
 			{
@@ -216,30 +270,45 @@ public:
 			catch (...)
 			{
 				CloseHandle(h);
-				DeleteFileW(localPath.c_str());
+				DeleteFileW(lpPart.c_str());
 				throw;
 			}
 			if (resp.ok())
 			{
-				// preserve modification time
 				if (f.modified.dwHighDateTime || f.modified.dwLowDateTime)
 					SetFileTime(h, nullptr, nullptr, &f.modified);
 				CloseHandle(h);
+				if (!isExport && !f.md5.empty())
+				{
+					std::string got = md5_file(part);
+					if (!got.empty() && got != to_lower(f.md5))
+					{
+						DeleteFileW(lpPart.c_str());
+						throw GdError("Checksum mismatch after downloading " + f.name + " - the local file was left unchanged");
+					}
+				}
+				if (!MoveFileExW(lpPart.c_str(), long_path(localPath).c_str(), MOVEFILE_REPLACE_EXISTING))
+				{
+					DWORD err = GetLastError();
+					DeleteFileW(lpPart.c_str());
+					throw GdError("Cannot replace " + wide_to_utf8(localPath) + ": " + wide_to_utf8(win_error_text(err)));
+				}
 				return;
 			}
 			CloseHandle(h);
-			DeleteFileW(localPath.c_str());
+			DeleteFileW(lpPart.c_str());
 			if (resp.status == 401 && attempt == 0) { oauth::force_refresh(m_cfg, m_http); continue; }
-			if ((resp.status == 429 || resp.status >= 500) && attempt < 3) { backoff(attempt); continue; }
+			if (isRetryable(resp) && attempt + 1 < maxAttempts) { backoff(attempt); continue; }
 			throw GdError(apiError(resp), (int)resp.status);
 		}
 	}
 
 	// Uploads localPath as a new file in parentId, or replaces the content of existingId.
+	// contentType: MIME type of the data; guessed from the name when empty.
 	DriveFile upload(const std::string& parentId, const std::string& name, const std::wstring& localPath,
-		const std::string& existingId, const ProgressFn& progress)
+		const std::string& existingId, const ProgressFn& progress, const std::string& contentType = "")
 	{
-		HANDLE h = CreateFileW(localPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		HANDLE h = CreateFileW(long_path(localPath).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (h == INVALID_HANDLE_VALUE)
 			throw GdError("Cannot open " + wide_to_utf8(localPath) + ": " + wide_to_utf8(win_error_text(GetLastError())));
 		struct Closer { HANDLE h; ~Closer() { CloseHandle(h); } } closer{ h };
@@ -250,14 +319,32 @@ public:
 		FILETIME mtime{};
 		GetFileTime(h, nullptr, nullptr, &mtime);
 
+		std::string mime = contentType.empty() ? guess_mime(utf8_to_wide(name)) : contentType;
 		json meta = json::object();
-		if (existingId.empty()) { meta["name"] = name; meta["parents"] = json::array({ parentId }); }
+		if (existingId.empty())
+		{
+			meta["name"] = name;
+			meta["parents"] = json::array({ parentId });
+			meta["mimeType"] = mime;
+		}
 		std::string m = filetime_to_rfc3339(mtime);
 		if (!m.empty()) meta["modifiedTime"] = m;
 
 		if (total < kMultipartLimit)
-			return uploadMultipart(h, total, meta, existingId, progress);
-		return uploadResumable(h, total, meta, existingId, progress);
+			return uploadMultipart(h, total, meta, existingId, mime, progress);
+		return uploadResumable(h, total, meta, existingId, mime, progress);
+	}
+
+	// True for responses worth retrying: 429, 5xx, and Drive's 403 rate-limit variants.
+	static bool isRetryable(const HttpResponse& r)
+	{
+		if (r.status == 429 || r.status >= 500) return true;
+		if (r.status == 403)
+		{
+			std::string reason = errorReason(r);
+			return reason == "rateLimitExceeded" || reason == "userRateLimitExceeded" || reason == "sharingRateLimitExceeded";
+		}
+		return false;
 	}
 
 private:
@@ -265,15 +352,33 @@ private:
 	static constexpr uint64_t kChunk = 8ull * 1024 * 1024;   // multiple of 256 KiB
 
 	Config& m_cfg;
-	HttpClient& m_http;
+	IHttp& m_http;
 
 	std::wstring authHeader() { return L"Authorization: Bearer " + utf8_to_wide(m_cfg.access_token); }
 
 	static uint64_t to_u64(const std::string& s) { return strtoull(s.c_str(), nullptr, 10); }
 
-	static void backoff(int attempt)
+	void backoff(int attempt) const
 	{
-		std::this_thread::sleep_for(std::chrono::milliseconds(500 * (1 << attempt)));
+		if (retryBaseMs > 0)
+			std::this_thread::sleep_for(std::chrono::milliseconds(retryBaseMs * (1 << std::min(attempt, 4))));
+	}
+
+	static std::string errorReason(const HttpResponse& r)
+	{
+		try
+		{
+			json j = json::parse(r.body);
+			if (j.contains("error") && j["error"].is_object())
+			{
+				auto& e = j["error"];
+				if (e.contains("errors") && e["errors"].is_array() && !e["errors"].empty())
+					return e["errors"][0].value("reason", "");
+				if (e.contains("status")) return e.value("status", "");
+			}
+		}
+		catch (...) {}
+		return {};
 	}
 
 	static std::string apiError(const HttpResponse& r)
@@ -287,9 +392,7 @@ private:
 				if (e.is_object())
 				{
 					std::string msg = e.value("message", "");
-					std::string reason;
-					if (e.contains("errors") && !e["errors"].empty())
-						reason = e["errors"][0].value("reason", "");
+					std::string reason = errorReason(r);
 					return "Google Drive error " + std::to_string(r.status) + ": " + msg + (reason.empty() ? "" : " [" + reason + "]");
 				}
 				return "Google Drive error " + std::to_string(r.status) + ": " + e.dump();
@@ -319,15 +422,28 @@ private:
 		return d;
 	}
 
-	// JSON API call with auth, one 401 retry and backoff on 429/5xx.
-	json call(const wchar_t* method, const std::string& url, const std::string& body = "", const char* contentType = nullptr)
+	// JSON API call with auth, one 401 refresh, and back-off on retryable responses.
+	// Network-level failures are retried for GET only (idempotent). `retry=false` disables
+	// status-based retries (used by createFolder, which handles them itself).
+	json call(const wchar_t* method, const std::string& url, const std::string& body = "",
+		const char* contentType = nullptr, bool retry = true)
 	{
+		bool isGet = wcscmp(method, L"GET") == 0;
 		for (int attempt = 0;; ++attempt)
 		{
 			oauth::ensure_token(m_cfg, m_http);
 			std::vector<std::wstring> hdrs{ authHeader() };
 			if (contentType) hdrs.push_back(L"Content-Type: " + utf8_to_wide(contentType));
-			HttpResponse r = m_http.request(method, utf8_to_wide(url), hdrs, body);
+			HttpResponse r;
+			try
+			{
+				r = m_http.request(method, utf8_to_wide(url), hdrs, body);
+			}
+			catch (const GdError&)
+			{
+				if (isGet && retry && attempt + 1 < maxAttempts) { backoff(attempt); continue; }
+				throw;
+			}
 			if (r.ok())
 			{
 				if (r.body.empty()) return json::object();
@@ -335,12 +451,13 @@ private:
 				catch (const std::exception& e) { throw GdError(std::string("Bad JSON from Drive: ") + e.what()); }
 			}
 			if (r.status == 401 && attempt == 0) { oauth::force_refresh(m_cfg, m_http); continue; }
-			if ((r.status == 429 || r.status >= 500) && attempt < 3) { backoff(attempt); continue; }
+			if (retry && isRetryable(r) && attempt + 1 < maxAttempts) { backoff(attempt); continue; }
 			throw GdError(apiError(r), (int)r.status);
 		}
 	}
 
-	DriveFile uploadMultipart(HANDLE h, uint64_t total, const json& meta, const std::string& existingId, const ProgressFn& progress)
+	DriveFile uploadMultipart(HANDLE h, uint64_t total, const json& meta, const std::string& existingId,
+		const std::string& mime, const ProgressFn& progress)
 	{
 		std::string data(total, '\0');
 		uint64_t off = 0;
@@ -355,15 +472,18 @@ private:
 
 		std::string boundary = "far_gdrive_" + oauth::random_verifier();
 		std::string body = "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" + meta.dump()
-			+ "\r\n--" + boundary + "\r\nContent-Type: application/octet-stream\r\n\r\n" + data + "\r\n--" + boundary + "--";
+			+ "\r\n--" + boundary + "\r\nContent-Type: " + mime + "\r\n\r\n" + data + "\r\n--" + boundary + "--";
 		std::string url = std::string(kUploadBase) + "files" + (existingId.empty() ? "" : "/" + url_encode(existingId))
 			+ "?uploadType=multipart&supportsAllDrives=true&fields=" + url_encode(kFileFields);
-		json j = call(existingId.empty() ? L"POST" : L"PATCH", url, body, ("multipart/related; boundary=" + boundary).c_str());
+		// a POST may have been applied even if the response was lost, so do not auto-retry a create
+		json j = call(existingId.empty() ? L"POST" : L"PATCH", url, body, ("multipart/related; boundary=" + boundary).c_str(),
+			/*retry*/ !existingId.empty());
 		if (progress && !progress(total, total)) throw GdCancel{};
 		return parse(j);
 	}
 
-	DriveFile uploadResumable(HANDLE h, uint64_t total, const json& meta, const std::string& existingId, const ProgressFn& progress)
+	DriveFile uploadResumable(HANDLE h, uint64_t total, const json& meta, const std::string& existingId,
+		const std::string& mime, const ProgressFn& progress)
 	{
 		// 1. start a session
 		std::string sessionUri;
@@ -374,7 +494,7 @@ private:
 				+ "?uploadType=resumable&supportsAllDrives=true&fields=" + url_encode(kFileFields);
 			HttpResponse r = m_http.request(existingId.empty() ? L"POST" : L"PATCH", utf8_to_wide(url),
 				{ authHeader(), L"Content-Type: application/json; charset=UTF-8",
-				  L"X-Upload-Content-Type: application/octet-stream",
+				  L"X-Upload-Content-Type: " + utf8_to_wide(mime),
 				  L"X-Upload-Content-Length: " + std::to_wstring(total) }, meta.dump());
 			if (r.ok())
 			{
@@ -383,7 +503,7 @@ private:
 				break;
 			}
 			if (r.status == 401 && attempt == 0) { oauth::force_refresh(m_cfg, m_http); continue; }
-			if ((r.status == 429 || r.status >= 500) && attempt < 3) { backoff(attempt); continue; }
+			if (isRetryable(r) && attempt + 1 < maxAttempts) { backoff(attempt); continue; }
 			throw GdError(apiError(r), (int)r.status);
 		}
 
@@ -410,9 +530,8 @@ private:
 			}
 			if (r.status == 308)
 			{
-				std::string rng = r.header("Range");   // "bytes=0-12345"
-				size_t dash = rng.find('-');
-				pos = dash == std::string::npos ? pos + len : to_u64(rng.substr(dash + 1)) + 1;
+				// "Range: bytes=0-N" tells how much the server holds; no Range header means nothing yet.
+				pos = rangeEnd(r.header("Range"));
 				failures = 0;
 				continue;
 			}
@@ -422,7 +541,7 @@ private:
 				try { return parse(json::parse(r.body)); }
 				catch (...) { throw GdError("Bad JSON after upload"); }
 			}
-			if ((r.status == 429 || r.status >= 500) && ++failures <= 5)
+			if (isRetryable(r) && ++failures <= 5)
 			{
 				backoff(std::min(failures, 4));
 				pos = queryResumePosition(sessionUri, total);
@@ -433,16 +552,18 @@ private:
 		throw GdError("Upload ended without a final response");
 	}
 
+	// Next byte to send according to a "Range: bytes=0-N" header (0 when absent).
+	static uint64_t rangeEnd(const std::string& rng)
+	{
+		size_t dash = rng.find('-');
+		return dash == std::string::npos ? 0 : to_u64(rng.substr(dash + 1)) + 1;
+	}
+
 	uint64_t queryResumePosition(const std::string& sessionUri, uint64_t total)
 	{
 		HttpResponse r = m_http.request(L"PUT", utf8_to_wide(sessionUri),
 			{ L"Content-Range: bytes */" + std::to_wstring(total) }, "");
-		if (r.status == 308)
-		{
-			std::string rng = r.header("Range");
-			size_t dash = rng.find('-');
-			return dash == std::string::npos ? 0 : to_u64(rng.substr(dash + 1)) + 1;
-		}
+		if (r.status == 308) return rangeEnd(r.header("Range"));
 		if (r.ok()) return total;
 		throw GdError(apiError(r), (int)r.status);
 	}

@@ -41,7 +41,17 @@ struct FileSlice
 	uint64_t length = 0;
 };
 
-class HttpClient
+// Transport interface; the Drive/OAuth code only depends on this, so tests can substitute a fake.
+struct IHttp
+{
+	virtual ~IHttp() = default;
+	virtual HttpResponse request(const wchar_t* method, const std::wstring& url,
+		const std::vector<std::wstring>& headers, const std::string& body,
+		const FileSlice* slice = nullptr, HANDLE sink = INVALID_HANDLE_VALUE,
+		const ProgressFn& progress = nullptr) = 0;
+};
+
+class HttpClient : public IHttp
 {
 public:
 	HttpClient()
@@ -74,7 +84,7 @@ public:
 	HttpResponse request(const wchar_t* method, const std::wstring& url,
 		const std::vector<std::wstring>& headers, const std::string& body,
 		const FileSlice* slice = nullptr, HANDLE sink = INVALID_HANDLE_VALUE,
-		const ProgressFn& progress = nullptr)
+		const ProgressFn& progress = nullptr) override
 	{
 		URL_COMPONENTS uc{};
 		uc.dwStructSize = sizeof uc;
