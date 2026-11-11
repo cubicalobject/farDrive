@@ -21,7 +21,10 @@ or by typing #gdrive:# or #gdrive:Folder\Subfolder# on the command line.
  ^<wrap>#Google Docs / Sheets / Slides#
  Native Google documents have no binary content, so they are exported
 when copied. The export formats are chosen in ~settings~@Config@
-(default: docx, xlsx, pptx).
+(default: docx, xlsx, pptx). F6 exports them but leaves the originals on
+Drive. F4 shows a plain-text/CSV export: Google Docs ask for confirmation
+before the edited text replaces the document; Sheets and Slides cannot be
+saved back from the editor.
 
  ^<wrap>#Special folders#
  #Shared with me# lists files other people shared with you.

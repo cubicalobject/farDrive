@@ -237,16 +237,39 @@ namespace oauth
 		return j;
 	}
 
-	// Makes sure cfg.access_token is valid; refreshes it when needed.
+	// Makes sure cfg.access_token is valid; refreshes it when needed. When Google reports that
+	// the stored refresh token is no longer usable (revoked, expired in testing mode, or the
+	// OAuth client changed), the tokens are cleared and GdAuthError is thrown so the UI can
+	// offer a fresh sign-in instead of repeating a raw error forever.
 	inline void ensure_token(Config& cfg, IHttp& http)
 	{
 		if (!cfg.access_token.empty() && cfg.expires_at - 60 > unix_now())
 			return;
 		if (cfg.refresh_token.empty())
-			throw GdError("Not signed in to Google Drive");
-		json j = post_form(http, kTokenEndpoint, {
-			{"client_id", cfg.effective_client_id()}, {"client_secret", cfg.effective_client_secret()},
-			{"refresh_token", cfg.refresh_token}, {"grant_type", "refresh_token"} });
+			throw GdAuthError("Not signed in to Google Drive");
+		auto resp = http.request(L"POST", utf8_to_wide(kTokenEndpoint),
+			{ L"Content-Type: application/x-www-form-urlencoded" }, form_encode({
+				{"client_id", cfg.effective_client_id()}, {"client_secret", cfg.effective_client_secret()},
+				{"refresh_token", cfg.refresh_token}, {"grant_type", "refresh_token"} }));
+		json j;
+		try { j = json::parse(resp.body); } catch (...) { j = json::object(); }
+		if (!resp.ok())
+		{
+			std::string code = j.is_object() ? j.value("error", "") : "";
+			std::string desc = j.is_object() ? j.value("error_description", "") : "";
+			if (code == "invalid_grant" || code == "invalid_client" || code == "unauthorized_client")
+			{
+				cfg.refresh_token.clear();
+				cfg.access_token.clear();
+				cfg.expires_at = 0;
+				try { cfg.save(); } catch (...) {}
+				throw GdAuthError("Your Google sign-in is no longer valid (" + code + (desc.empty() ? "" : ": " + desc)
+					+ "). Please sign in again.", (int)resp.status);
+			}
+			std::string msg = code + ": " + desc;
+			if (msg == ": ") msg = resp.body.substr(0, 300);
+			throw GdError("Token endpoint error (" + std::to_string(resp.status) + ") " + msg, (int)resp.status);
+		}
 		cfg.access_token = j.value("access_token", "");
 		cfg.expires_at = unix_now() + j.value("expires_in", 3600);
 		try { cfg.save(); } catch (...) {}   // a failed save must not break the current operation

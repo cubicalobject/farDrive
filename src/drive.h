@@ -11,7 +11,7 @@ static const char* const kMimeFolder = "application/vnd.google-apps.folder";
 static const char* const kMimeShortcut = "application/vnd.google-apps.shortcut";
 static const char* const kApiBase = "https://www.googleapis.com/drive/v3/";
 static const char* const kUploadBase = "https://www.googleapis.com/upload/drive/v3/";
-static const char* const kFileFields = "id,name,mimeType,size,modifiedTime,createdTime,md5Checksum,trashed,shortcutDetails";
+static const char* const kFileFields = "id,name,mimeType,size,modifiedTime,createdTime,md5Checksum,trashed,explicitlyTrashed,shortcutDetails";
 
 struct DriveFile
 {
@@ -23,6 +23,7 @@ struct DriveFile
 	FILETIME modified{};
 	FILETIME created{};
 	bool trashed = false;
+	bool explicitlyTrashed = false;   // trashed by itself, not just because a parent folder was
 	bool isShortcut = false;
 	std::string targetId;      // for shortcuts
 	std::string targetMime;
@@ -117,17 +118,25 @@ public:
 		return out;
 	}
 
-	std::vector<DriveFile> listChildren(const std::string& folderId)
+	// Children of a folder. Inside the Trash the children of a trashed folder are themselves
+	// flagged as trashed, so the caller passes includeTrashed=true there; otherwise trashed
+	// items (which Drive still reports under their old parent) are filtered out.
+	std::vector<DriveFile> listChildren(const std::string& folderId, bool includeTrashed = false)
 	{
-		return list("'" + q_escape(folderId) + "' in parents and trashed = false");
+		return list("'" + q_escape(folderId) + "' in parents" + (includeTrashed ? "" : " and trashed = false"));
 	}
 	std::vector<DriveFile> listSharedWithMe()
 	{
 		return list("sharedWithMe = true and trashed = false", "folder,name");
 	}
+	// Top level of the Trash: only items the user trashed themselves. Items that are trashed
+	// because a parent folder was trashed are reached by entering that folder.
 	std::vector<DriveFile> listTrash()
 	{
-		return list("trashed = true and 'me' in owners", "folder,name");
+		std::vector<DriveFile> all = list("trashed = true and 'me' in owners", "folder,name");
+		std::vector<DriveFile> out;
+		for (auto& f : all) if (f.explicitlyTrashed) out.push_back(f);
+		return out;
 	}
 
 	// Shared drives, presented as folders whose id is the drive id.
@@ -411,6 +420,7 @@ private:
 		d.md5 = f.value("md5Checksum", "");
 		d.size = to_u64(f.value("size", "0"));
 		d.trashed = f.value("trashed", false);
+		d.explicitlyTrashed = f.value("explicitlyTrashed", false);
 		parse_rfc3339(f.value("modifiedTime", ""), d.modified);
 		parse_rfc3339(f.value("createdTime", ""), d.created);
 		if (d.mimeType == kMimeShortcut && f.contains("shortcutDetails"))

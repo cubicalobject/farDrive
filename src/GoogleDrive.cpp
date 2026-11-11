@@ -90,6 +90,13 @@ enum
 	MSignInNow,
 	MFolderLoop,
 	MNotMovedSkipped,
+	MExportedNotMoved,
+	MSaveDocTitle,
+	MSaveDocWarn1,
+	MSaveDocWarn2,
+	MReplace,
+	MSaveNotSupported,
+	MAuthExpired,
 };
 
 // ---------------------------------------------------------------------------
@@ -317,12 +324,14 @@ public:
 	{
 		std::vector<Entry> out;
 		std::vector<DriveFile> files;
+		bool drivesList = id == kDrivesId;
 		if (id == kSharedId) files = g_drive->listSharedWithMe();
 		else if (id == kTrashId) files = g_drive->listTrash();
-		else if (id == kDrivesId) files = g_drive->listSharedDrives();
+		else if (drivesList) files = g_drive->listSharedDrives();
 		else
 		{
-			files = g_drive->listChildren(id);
+			// below the Trash every item is flagged trashed, so the filter must be off there
+			files = g_drive->listChildren(id, inTrash());
 			if (id == "root")
 			{
 				auto pseudo = [&](const char* pid, int msg) {
@@ -346,6 +355,7 @@ public:
 			Entry e;
 			static_cast<DriveFile&>(e) = f;
 			e.display = uniq[i++];
+			e.pseudo = drivesList;   // shared drives are containers, not files: no delete/rename
 			out.push_back(std::move(e));
 		}
 		return out;
@@ -628,11 +638,15 @@ static const char* ViewExportExt(const std::string& mime)
 	return nullptr;
 }
 
-// Downloads one panel entry (recursively for folders). Returns true only when the entry and all
-// of its children were copied; the caller must not delete (move) anything that returns false.
+// Outcome of copying one entry. Only `Copied` items may be deleted by a move: an export of a
+// Google document is a lossy conversion, not a copy, so the original must stay on Drive.
+enum class CopyResult { Skipped, Copied, Exported };
+
+// Downloads one panel entry (recursively for folders). A folder counts as Copied only when every
+// child was Copied; it is Exported when nothing was skipped but some children were exports.
 // viewMode: F3/F4/QuickView - the local name must equal the panel name, so no extension is added.
 // visited: folder ids already entered in this operation (shortcuts can form cycles).
-static bool DownloadEntry(Panel& p, const Entry& e, const std::wstring& destDir, Progress& prog, Overwrite& ow,
+static CopyResult DownloadEntry(Panel& p, const Entry& e, const std::wstring& destDir, Progress& prog, Overwrite& ow,
 	OpStats& st, bool viewMode, std::set<std::string>& visited)
 {
 	std::wstring local = destDir + L"\\" + e.display;
@@ -642,15 +656,19 @@ static bool DownloadEntry(Panel& p, const Entry& e, const std::wstring& destDir,
 		if (!visited.insert(fid).second)
 		{
 			st.skip(std::wstring(M(MFolderLoop)) + L" " + e.display);
-			return false;
+			return CopyResult::Skipped;
 		}
 		if (!CreateDirectoryW(long_path(local).c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
 			throw GdError("Cannot create folder " + wide_to_utf8(local) + ": " + wide_to_utf8(win_error_text(GetLastError())));
 		ThrowIfCancelled(prog.update(e.display, L"", 0, 0, true));
-		bool complete = true;
+		CopyResult result = CopyResult::Copied;
 		for (auto& child : p.fetch(fid))
-			if (!DownloadEntry(p, child, local, prog, ow, st, viewMode, visited)) complete = false;
-		return complete;
+		{
+			CopyResult r = DownloadEntry(p, child, local, prog, ow, st, viewMode, visited);
+			if (r == CopyResult::Skipped) result = CopyResult::Skipped;
+			else if (r == CopyResult::Exported && result == CopyResult::Copied) result = CopyResult::Exported;
+		}
+		return result;
 	}
 	DriveFile f = e;
 	if (f.isShortcut)
@@ -666,7 +684,7 @@ static bool DownloadEntry(Panel& p, const Entry& e, const std::wstring& destDir,
 		if (ext.empty() || !export_mime_for_ext(ext))
 		{
 			st.skip(std::wstring(M(MNotExportable)) + L" " + e.display);
-			return false;
+			return CopyResult::Skipped;
 		}
 		std::wstring wext = L"." + utf8_to_wide(ext);
 		if (!viewMode && (local.size() < wext.size() || _wcsicmp(local.c_str() + local.size() - wext.size(), wext.c_str()) != 0))
@@ -674,13 +692,13 @@ static bool DownloadEntry(Panel& p, const Entry& e, const std::wstring& destDir,
 	}
 	if (!viewMode && GetFileAttributesW(long_path(local).c_str()) != INVALID_FILE_ATTRIBUTES)
 	{
-		if (!AskOverwrite(local, ow)) { st.skip(L""); return false; }
+		if (!AskOverwrite(local, ow)) { st.skip(L""); return CopyResult::Skipped; }
 	}
 	ThrowIfCancelled(prog.update(e.display, local, 0, f.size, true));
 	g_drive->download(f, local, [&](uint64_t done, uint64_t total) {
 		return prog.update(e.display, local, done, total ? total : f.size);
 	}, exportOverride);
-	return true;
+	return f.isGoogleDoc() ? CopyResult::Exported : CopyResult::Copied;
 }
 
 static void DeleteEntry(Panel& p, const Entry& e)
@@ -882,8 +900,7 @@ HANDLE WINAPI OpenW(const OpenInfo* info)
 		if (target.size() >= 2 && target.front() == L'"' && target.back() == L'"') target = target.substr(1, target.size() - 2);
 	}
 
-	try
-	{
+	auto openListing = [&]() {
 		Progress prog(M(MReading), true);
 		prog.update(L"", L"", 0, 0, true);
 		if (!target.empty() && !p->chdir(target))
@@ -892,6 +909,7 @@ HANDLE WINAPI OpenW(const OpenInfo* info)
 			ShowError(L"Folder not found: " + target);
 		}
 		try { p->ensureEntries(); }
+		catch (const GdAuthError&) { throw; }
 		catch (const GdError&)
 		{
 			if (info->OpenFrom != OPEN_SHORTCUT) throw;
@@ -899,10 +917,27 @@ HANDLE WINAPI OpenW(const OpenInfo* info)
 			p->ensureEntries();
 		}
 		p->loadAbout();
+	};
+	for (int attempt = 0;; ++attempt)
+	{
+		try
+		{
+			openListing();
+			return p.release();
+		}
+		catch (const GdCancel&) { return nullptr; }
+		catch (const GdAuthError& e)
+		{
+			// the stored sign-in was rejected (tokens already cleared): offer a fresh sign-in once
+			if (attempt > 0 || Message(FMSG_WARNING | FMSG_MB_YESNO, MsgGuid, { M(MTitle), M(MAuthExpired) }) != 0)
+			{
+				if (attempt > 0) ShowError(e.what());
+				return nullptr;
+			}
+			if (!DoSignIn()) return nullptr;
+		}
+		catch (const std::exception& e) { ShowError(e.what()); return nullptr; }
 	}
-	catch (const GdCancel&) { return nullptr; }
-	catch (const std::exception& e) { ShowError(e.what()); return nullptr; }
-	return p.release();
 }
 
 void WINAPI ClosePanelW(const ClosePanelInfo* info)
@@ -999,15 +1034,19 @@ intptr_t WINAPI GetFilesW(GetFilesInfo* info)
 		Progress prog(M(MDownloading), showUi);
 		std::set<std::string> visited{ p->curId() };
 		std::vector<const Entry*> copied;     // fully copied items - the only ones a move may delete
-		bool anySkipped = false;
+		bool anySkipped = false, anyExported = false;
 		for (size_t i = 0; i < info->ItemsNumber; ++i)
 		{
 			const wchar_t* name = info->PanelItem[i].FileName;
 			if (!name || !wcscmp(name, L"..")) continue;
 			const Entry* e = p->find(name);
 			if (!e) continue;
-			if (DownloadEntry(*p, *e, dest, prog, ow, st, viewMode, visited)) copied.push_back(e);
-			else anySkipped = true;
+			switch (DownloadEntry(*p, *e, dest, prog, ow, st, viewMode, visited))
+			{
+			case CopyResult::Copied: copied.push_back(e); break;
+			case CopyResult::Exported: anyExported = true; break;
+			case CopyResult::Skipped: anySkipped = true; break;
+			}
 		}
 		if (info->Move)
 		{
@@ -1018,6 +1057,7 @@ intptr_t WINAPI GetFilesW(GetFilesInfo* info)
 				DeleteEntry(*p, *e);
 			}
 			p->invalidate();
+			if (anyExported) st.skip(M(MExportedNotMoved));
 			if (anySkipped) st.skip(M(MNotMovedSkipped));
 		}
 	}
@@ -1079,8 +1119,19 @@ intptr_t WINAPI PutFilesW(const PutFilesInfo* info)
 					std::string mime;
 					if (e->isGoogleDoc())
 					{
+						// The editor only ever saw an export. For Sheets/Slides that export is partial
+						// (first sheet / plain text), so writing it back would destroy the rest: refuse.
+						// For Docs it is complete but unformatted: ask first.
 						const char* ext = ViewExportExt(e->effectiveMime());
-						if (ext) mime = export_mime_for_ext(ext);
+						if (!ext || e->effectiveMime() != "application/vnd.google-apps.document")
+						{
+							ShowError(M(MSaveNotSupported));
+							return 0;
+						}
+						intptr_t r = Message(FMSG_WARNING, DeleteGuid,
+							{ M(MSaveDocTitle), e->display, M(MSaveDocWarn1), M(MSaveDocWarn2) }, { M(MReplace), M(MCancel) });
+						if (r != 0) return -1;
+						mime = export_mime_for_ext(ext);
 					}
 					ThrowIfCancelled(prog.update(e->display, local, 0, 0, true));
 					g_drive->upload(p->curId(), e->name, local, e->effectiveId(),
@@ -1115,6 +1166,7 @@ intptr_t WINAPI DeleteFilesW(const DeleteFilesInfo* info)
 	bool silent = (info->OpMode & OPM_SILENT) != 0;
 
 	std::vector<const Entry*> targets;
+	bool refused = false;   // pseudo entries (Shared with me / Shared drives / Trash / a shared drive)
 	try
 	{
 		for (size_t i = 0; i < info->ItemsNumber; ++i)
@@ -1122,11 +1174,17 @@ intptr_t WINAPI DeleteFilesW(const DeleteFilesInfo* info)
 			const wchar_t* name = info->PanelItem[i].FileName;
 			if (!name || !wcscmp(name, L"..")) continue;
 			const Entry* e = p->find(name);
-			if (e && !e->pseudo) targets.push_back(e);
+			if (!e) continue;
+			if (e->pseudo) refused = true;
+			else targets.push_back(e);
 		}
 	}
 	catch (const std::exception& e) { if (!silent) ShowError(e.what()); return 0; }
-	if (targets.empty()) return 1;
+	if (targets.empty())
+	{
+		if (refused && !silent) ShowError(M(MNotAllowedHere));
+		return refused ? 0 : 1;
+	}
 
 	bool permanent = p->inTrash() || !g_cfg.trash_on_delete;
 	if (!silent)
@@ -1209,7 +1267,8 @@ intptr_t WINAPI ProcessPanelInputW(const ProcessPanelInputInfo* info)
 	try
 	{
 		const Entry* e = p->find(name);
-		if (!e || e->pseudo || p->inTrash()) return TRUE;
+		if (!e) return TRUE;
+		if (e->pseudo || p->inTrash()) { ShowError(M(MNotAllowedHere)); return TRUE; }
 		wchar_t newName[512] = {};
 		std::wstring old = utf8_to_wide(e->name);
 		if (!PSI.InputBox(&PluginGuid, &RenameGuid, M(MRenameTitle), M(MRenamePrompt), L"GoogleDriveRename",

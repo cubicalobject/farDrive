@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.0.2 - 2026-11-10
+
+Fixes from the first round of tester feedback.
+
+- Trash: the top level shows only items you trashed yourself, and folders
+  inside the Trash now list their real contents. Previously a trashed folder
+  looked empty, so F5 copied nothing and F6 permanently deleted the folder
+  with everything in it.
+- F4 on Google Sheets/Slides can no longer save back (only the first sheet /
+  plain text had been exported, so saving wiped the rest). F4 on a Google Doc
+  asks for confirmation before replacing the document with plain text.
+- F6 (move) exports Google Docs/Sheets/Slides but leaves the originals on
+  Drive instead of trashing or deleting them; a message says so.
+- An expired or revoked sign-in (invalid_grant, or a changed OAuth client)
+  clears the stored tokens and offers to sign in again, instead of showing a
+  raw error on every open.
+- F8 and Shift+F6 on an entry in the "Shared drives" list report that the
+  operation is not available instead of failing with a 404.
+
 ## 1.0.0.1 - 2026-11-08
 
 First release.

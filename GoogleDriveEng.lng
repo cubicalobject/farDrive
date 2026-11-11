@@ -116,3 +116,17 @@
 "Folder loop (shortcut/junction) not followed:"
 // MNotMovedSkipped
 "Items that were not fully copied were left on Google Drive."
+// MExportedNotMoved
+"Google Docs/Sheets/Slides were exported, not moved; the originals stay on Google Drive."
+// MSaveDocTitle
+"Save to Google Drive"
+// MSaveDocWarn1
+"This is a Google document. Saving replaces its entire content with the"
+// MSaveDocWarn2
+"plain text you edited; formatting, images and comments will be lost."
+// MReplace
+"&Replace document"
+// MSaveNotSupported
+"Google Sheets and Slides cannot be saved back from the editor: only the first sheet / the plain text was exported, so saving would destroy the rest. Use F5 to export a copy instead."
+// MAuthExpired
+"Your Google sign-in has expired or was revoked. Sign in again now?"

@@ -21,6 +21,13 @@ struct GdError : std::runtime_error
 	explicit GdError(const std::string& m, int s = 0) : std::runtime_error(m), status(s) {}
 };
 
+// The stored sign-in is no longer valid (token revoked/expired, client changed). The tokens
+// have already been cleared when this is thrown; the user has to sign in again.
+struct GdAuthError : GdError
+{
+	using GdError::GdError;
+};
+
 // Thrown when the user cancels an operation (Esc).
 struct GdCancel {};
 

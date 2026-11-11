@@ -288,6 +288,47 @@ int main(int argc, char** argv)
 		try { drive.listChildren("root"); } catch (const GdError& e) { threw = e.status == 403; }
 		check(threw && fake.log.size() == 1, "403 forbidden is not retried");
 
+		// Trash: top level shows only explicitly trashed items; children below keep the filter off
+		fake.log.clear();
+		fake.script.push_back(Const(200, R"({"files":[
+			{"id":"t1","name":"Trashed folder","mimeType":"application/vnd.google-apps.folder","trashed":true,"explicitlyTrashed":true},
+			{"id":"t2","name":"child of it","trashed":true,"explicitlyTrashed":false},
+			{"id":"t3","name":"Trashed file","trashed":true,"explicitlyTrashed":true}]})"));
+		auto trash = drive.listTrash();
+		check(trash.size() == 2 && trash[0].id == "t1" && trash[1].id == "t3", "listTrash hides items trashed via their parent");
+		fake.log.clear();
+		fake.script.push_back(Const(200, R"({"files":[]})"));
+		drive.listChildren("t1", true);
+		fake.script.push_back(Const(200, R"({"files":[]})"));
+		drive.listChildren("t1", false);
+		auto qParam = [](const std::wstring& url) {
+			size_t a = url.find(L"?q="), b = url.find(L'&', a == std::wstring::npos ? 0 : a);
+			return a == std::wstring::npos ? std::wstring() : url.substr(a + 3, b == std::wstring::npos ? std::wstring::npos : b - a - 3);
+		};
+		check(qParam(fake.log[0].url).find(L"trashed") == std::wstring::npos
+			&& qParam(fake.log[1].url).find(L"trashed%20%3D%20false") != std::wstring::npos,
+			"listChildren drops the trashed filter inside the Trash");
+
+		// expired / revoked refresh token: tokens are cleared and GdAuthError is raised
+		{
+			Config expired = TestConfig(dir);
+			expired.access_token.clear();
+			Drive d2(expired, fake);
+			fake.log.clear();
+			fake.script.push_back(Const(400, R"({"error":"invalid_grant","error_description":"Token has been expired or revoked."})"));
+			bool auth = false;
+			try { d2.listChildren("root"); } catch (const GdAuthError&) { auth = true; } catch (...) {}
+			check(auth && !expired.signed_in() && expired.access_token.empty() && expired.client_id == "cid",
+				"invalid_grant clears the tokens, keeps the client, raises GdAuthError");
+			Config other = TestConfig(dir);
+			other.access_token.clear();
+			Drive d3(other, fake);
+			fake.script.push_back(Const(500, R"({"error":"server_error"})"));
+			bool plain = false;
+			try { d3.listChildren("root"); } catch (const GdAuthError&) {} catch (const GdError&) { plain = true; }
+			check(plain && other.signed_in(), "other token endpoint errors keep the sign-in");
+		}
+
 		// network error on GET is retried
 		fake.log.clear();
 		fake.script.push_back([](const FakeHttp::Req&) -> HttpResponse { throw GdError("WinHttpSendRequest failed"); });
