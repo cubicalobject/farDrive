@@ -5,13 +5,13 @@
 // MConfigTitle
 "Google Drive settings"
 // MClientId
-"OAuth client &ID:"
+"OAuth &client ID:"
 // MClientSecret
 "OAuth client &secret:"
 // MTrashOnDelete
 "Move deleted files to &Trash (F8), instead of deleting permanently"
 // MAddToDisks
-"Show in &Disks menu (Alt+F1 / Alt+F2)"
+"Show in Dis&ks menu (Alt+F1 / Alt+F2)"
 // MExportDoc
 "Export Google &Docs as:"
 // MExportSheet
@@ -130,3 +130,41 @@
 "Google Sheets and Slides cannot be saved back from the editor: only the first sheet / the plain text was exported, so saving would destroy the rest. Use F5 to export a copy instead."
 // MAuthExpired
 "Your Google sign-in has expired or was revoked. Sign in again now?"
+// MCopyTitle
+"Copy"
+// MMoveTitle
+"Move"
+// MCopyPrompt
+"&Copy to:"
+// MMovePrompt
+"&Move to (the originals go to the Google Drive Trash):"
+// MMovePromptPerm
+"&Move to (the originals are deleted permanently!):"
+// MItemsSelected
+"item(s) selected on Google Drive"
+// MRestoreTitle
+"Restore from Trash"
+// MRestoreQuestion
+"Restore to the original location:"
+// MRestore
+"&Restore"
+// MItemError
+"Error while processing:"
+// MRetry
+"&Retry"
+// MSkipAllErrors
+"Skip a&ll errors"
+// MCancelOpQuestion
+"Cancel the operation?"
+// MFolderExists
+"A folder with this name already exists here."
+// MBadExportExt
+"Invalid export format. Allowed:"
+// MExportDrawing
+"Export Google Dra&wings as:"
+// MSignInHint
+"If Google says the app is not verified: click Advanced, then \"Go to ... (unsafe)\"."
+// MSignInUrlCopied
+"The sign-in link was copied to the clipboard in case the browser did not open."
+// MGoogleFileViewOnly
+"This is an export of the first sheet / the plain text of a Google file. It is opened read-only; changes cannot be saved back. Press Enter on the item to open it in the browser."

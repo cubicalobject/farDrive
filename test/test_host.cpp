@@ -213,6 +213,9 @@ int main(int argc, char** argv)
 		check(oauth::sha256_b64url("abc") == "ungWv48Bz-pBQUDeXa4iI7ADYaOWF3qctBD_YfIAFa0", "sha256 base64url");
 		check(base64_decode(base64_encode("hello, world!", 13)) == "hello, world!" && base64_encode("ab", 2) == "YWI=", "base64 round trip");
 		check(export_mime_for_ext("docx") != nullptr && export_mime_for_ext("zzz") == nullptr, "export table");
+		check(valid_export_ext("doc", "docx") && valid_export_ext("sheet", "csv") && valid_export_ext("slides", "txt")
+			&& valid_export_ext("drawing", "svg") && !valid_export_ext("doc", "doc") && !valid_export_ext("sheet", "docx")
+			&& !valid_export_ext("doc", ""), "valid_export_ext per document kind");
 		check(guess_mime(L"photo.JPG") == "image/jpeg" && guess_mime(L"noext") == "application/octet-stream", "guess_mime");
 		check(long_path(L"C:\\a\\b") == L"\\\\?\\C:\\a\\b" && long_path(L"\\\\srv\\share\\x") == L"\\\\?\\UNC\\srv\\share\\x"
 			&& long_path(L"\\\\?\\C:\\x") == L"\\\\?\\C:\\x", "long_path");

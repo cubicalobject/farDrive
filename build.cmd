@@ -55,6 +55,10 @@ if not exist "%FARDIR%\Far.exe" (
 )
 if not exist "%FARDIR%\Plugins\GoogleDrive" mkdir "%FARDIR%\Plugins\GoogleDrive"
 copy /y "%OUT%\*" "%FARDIR%\Plugins\GoogleDrive\" >nul
+if errorlevel 1 (
+    echo INSTALL FAILED: could not copy into "%FARDIR%\Plugins\GoogleDrive" ^(is Far running?^)
+    exit /b 1
+)
 echo Installed to %FARDIR%\Plugins\GoogleDrive
 goto :eof
 

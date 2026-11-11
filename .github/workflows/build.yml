@@ -1,5 +1,5 @@
 # Builds the plugin on every push/PR, runs the smoke tests, and attaches a zip to GitHub releases
-# when a tag like v1.0.0.1 is pushed.
+# when a release tag (1.0.0.3 or v1.0.0.3) is pushed.
 #
 # Repository secrets (Settings -> Secrets and variables -> Actions), both optional:
 #   GDRIVE_CLIENT_ID      OAuth "Desktop app" client ID compiled into release builds
@@ -10,7 +10,7 @@ name: build
 on:
   push:
     branches: ["**"]
-    tags: ["v*"]
+    tags: ["v[0-9]*", "[0-9]*"]
   pull_request:
   workflow_dispatch:
 
@@ -50,7 +50,7 @@ jobs:
           path: out/GoogleDrive-*-x64.zip
 
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: out/GoogleDrive-*-x64.zip

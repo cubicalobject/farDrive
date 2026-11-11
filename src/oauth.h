@@ -328,8 +328,11 @@ namespace oauth
 	}
 
 	// Full interactive sign-in. `wait` is polled every 200 ms while we wait for the browser;
-	// returning false from it aborts (GdCancel). Fills refresh/access token in cfg.
-	inline void sign_in(Config& cfg, IHttp& http, const std::function<bool()>& wait)
+	// returning false from it aborts (GdCancel). `onUrl` receives the authorization URL before
+	// the browser is launched (so the UI can show/copy it in case the browser does not open).
+	// Fills refresh/access token in cfg.
+	inline void sign_in(Config& cfg, IHttp& http, const std::function<bool()>& wait,
+		const std::function<void(const std::string&)>& onUrl = nullptr)
 	{
 		if (!cfg.has_client())
 			throw GdError("Client ID is empty. Create an OAuth 'Desktop app' client in Google Cloud Console first.");
@@ -363,6 +366,7 @@ namespace oauth
 			{"scope", kScope}, {"access_type", "offline"}, {"prompt", "consent"},
 			{"code_challenge", challenge}, {"code_challenge_method", "S256"}, {"state", state} });
 
+		if (onUrl) onUrl(url);
 		ShellExecuteW(nullptr, L"open", utf8_to_wide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 
 		// Wait for the browser to hit the loopback listener. Connections that are not the OAuth

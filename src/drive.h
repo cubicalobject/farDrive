@@ -11,7 +11,7 @@ static const char* const kMimeFolder = "application/vnd.google-apps.folder";
 static const char* const kMimeShortcut = "application/vnd.google-apps.shortcut";
 static const char* const kApiBase = "https://www.googleapis.com/drive/v3/";
 static const char* const kUploadBase = "https://www.googleapis.com/upload/drive/v3/";
-static const char* const kFileFields = "id,name,mimeType,size,modifiedTime,createdTime,md5Checksum,trashed,explicitlyTrashed,shortcutDetails";
+static const char* const kFileFields = "id,name,mimeType,size,modifiedTime,createdTime,md5Checksum,trashed,explicitlyTrashed,shortcutDetails,webViewLink";
 
 struct DriveFile
 {
@@ -27,6 +27,7 @@ struct DriveFile
 	bool isShortcut = false;
 	std::string targetId;      // for shortcuts
 	std::string targetMime;
+	std::string webViewLink;   // opens the item in the browser (Google Docs etc.)
 
 	bool isFolder() const { return mimeType == kMimeFolder || (isShortcut && targetMime == kMimeFolder); }
 	bool isGoogleDoc() const { return starts_with(effectiveMime(), "application/vnd.google-apps.") && !isFolder(); }
@@ -58,6 +59,23 @@ inline const char* export_mime_for_ext(const std::string& ext)
 	};
 	for (auto& [e, m] : tbl) if (ext == e) return m;
 	return nullptr;
+}
+
+// Export formats Drive supports per Google document kind ("doc", "sheet", "slides", "drawing").
+inline const char* allowed_export_exts(const char* kind)
+{
+	std::string k = kind;
+	if (k == "doc") return "docx odt rtf pdf txt html epub md";
+	if (k == "sheet") return "xlsx ods csv tsv pdf";
+	if (k == "slides") return "pptx odp pdf txt";
+	if (k == "drawing") return "png jpg svg pdf";
+	return "";
+}
+
+inline bool valid_export_ext(const char* kind, const std::string& ext)
+{
+	std::string allowed = std::string(" ") + allowed_export_exts(kind) + " ";
+	return !ext.empty() && allowed.find(" " + ext + " ") != std::string::npos;
 }
 
 // Lower-case hex MD5 of a file (BCrypt). Empty string on failure.
@@ -421,6 +439,7 @@ private:
 		d.size = to_u64(f.value("size", "0"));
 		d.trashed = f.value("trashed", false);
 		d.explicitlyTrashed = f.value("explicitlyTrashed", false);
+		d.webViewLink = f.value("webViewLink", "");
 		parse_rfc3339(f.value("modifiedTime", ""), d.modified);
 		parse_rfc3339(f.value("createdTime", ""), d.created);
 		if (d.mimeType == kMimeShortcut && f.contains("shortcutDetails"))

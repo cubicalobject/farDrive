@@ -9,31 +9,47 @@ $ #Google Drive plugin#
 or by typing #gdrive:# or #gdrive:Folder\Subfolder# on the command line.
 
  ^<wrap>#Keys#
- F5 / F6      copy / move files between Google Drive and a local panel
+ Enter        enter a folder; open a Google Doc/Sheet/Slides in the browser
+ F3 / F4      view / edit a file (Google files: text or CSV export, see below)
+ F5 / F6      copy / move files between Google Drive and a local panel;
+              a dialog asks for the destination folder
+ F6 in Trash  restore the selected items to their original folder
  F7           create a folder on Google Drive
- F8           move to Trash (or delete permanently - see ~settings~@Config@)
+ F8           move to Trash (or delete permanently - see ~settings~@Config@);
+              inside the Trash F8 deletes permanently
  Shift+F6     rename the current file or folder
- Alt+F7       search inside Google Drive
- Ctrl+Shift+0..9  save the current Drive folder as a folder shortcut
+ Alt+F7       search inside Google Drive (pseudo folders are not searched)
+ Ctrl+Shift+0..9  save the current Drive folder as a folder shortcut,
+ RightCtrl+0..9   jump back to it
  Ctrl+L       show account and storage information
- Esc          cancel a running transfer
+ Esc          cancel a running transfer (asks for confirmation)
 
  ^<wrap>#Google Docs / Sheets / Slides#
  Native Google documents have no binary content, so they are exported
 when copied. The export formats are chosen in ~settings~@Config@
-(default: docx, xlsx, pptx). F6 exports them but leaves the originals on
-Drive. F4 shows a plain-text/CSV export: Google Docs ask for confirmation
-before the edited text replaces the document; Sheets and Slides cannot be
-saved back from the editor.
+(default: docx, xlsx, pptx, png). F6 exports them but leaves the
+originals on Drive. F3/F4 show a plain-text/CSV export: for a Google Doc
+the plugin asks for confirmation before the edited text replaces the
+document; Sheets and Slides open read-only because only the first sheet /
+the plain text is exported. Press Enter to open them in the browser.
+
+ ^<wrap>#Errors during a transfer#
+ When one item fails (export too large, no permission, network) the plugin
+offers Retry, Skip, Skip all errors or Cancel instead of aborting the batch.
 
  ^<wrap>#Special folders#
  #Shared with me# lists files other people shared with you.
- #Trash# lists trashed files; deleting there is permanent.
+ #Shared drives# lists the shared drives you have access to; enter one to
+browse it. The drives themselves cannot be renamed or deleted here.
+ #Trash# lists items you trashed; folders inside show their contents.
+Deleting there is permanent; F6 restores.
 
 @Config
 $ #Google Drive settings#
  #OAuth client ID / secret#
- The plugin talks to Google directly, so it needs its own OAuth client:
+ Releases of the plugin ship with their own Google client, in which case
+the fields can stay empty and you only have to press #Sign in#. To use your
+own client instead (no "unverified app" warning, no shared user limit):
  1. Open https://console.cloud.google.com/ and create (or pick) a project.
  2. Enable the Drive API:
     https://console.cloud.google.com/apis/library/drive.googleapis.com
@@ -44,24 +60,32 @@ $ #Google Drive settings#
  5. Client: https://console.cloud.google.com/auth/clients -> Create client
     -> Application type: #Desktop app#. Copy the client ID and secret.
  6. Paste both into this dialog (Shift+Ins pastes) and press #Sign in#.
-    Your browser opens; click Continue on the "unverified app" warning and
-    allow access. Tokens are stored in
-    %FARPROFILE%\PluginsData\GoogleDrive\config.json.
 
- While the consent screen is in Testing status the sign-in expires after
-7 days; click "Publish app" on the Audience page to avoid that.
+ #Signing in#
+ Your browser opens Google's consent page. If Google says the app is not
+verified, click #Advanced# and then #Go to ... (unsafe)#, then allow the
+access. The sign-in link is also copied to the clipboard in case the
+browser does not open. Tokens are stored, encrypted for your Windows user,
+in %FARPROFILE%\PluginsData\GoogleDrive\config.json; #Sign out# removes
+and revokes them.
 
- ^<wrap>#Opening the panel#
- F11 -> Google Drive, or type gdrive: on the command line, or
-F9 -> Left/Right -> Change drive. Alt+F1/Alt+F2 also work unless the
-laptop F-keys need Fn.
+ While a self-made consent screen is in Testing status the sign-in expires
+after 7 days; click "Publish app" on the Audience page to avoid that.
 
  #Move deleted files to Trash#
  When on, F8 moves files to the Drive Trash. When off, F8 deletes them
 permanently.
 
  #Export formats#
- Extensions used when Google Docs, Sheets and Slides are copied to a local
-disk: docx/odt/rtf/pdf/txt/html/epub/md, xlsx/ods/csv/tsv/pdf, pptx/odp/pdf.
+ Extensions used when Google documents are copied to a local disk:
+ Docs      docx odt rtf pdf txt html epub md
+ Sheets    xlsx ods csv tsv pdf
+ Slides    pptx odp pdf txt
+ Drawings  png jpg svg pdf
+
+ ^<wrap>#Opening the panel#
+ F11 -> Google Drive, or type gdrive: on the command line, or
+F9 -> Left/Right -> Change drive. Alt+F1/Alt+F2 also work unless the
+laptop F-keys need Fn.
 
  ~Contents~@Contents@

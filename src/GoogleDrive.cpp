@@ -28,6 +28,8 @@ static const GUID MkdirGuid     = { 0xf6b5cbd7, 0x80cd, 0x4e6f, { 0x81, 0xad, 0x
 static const GUID RenameGuid    = { 0x07c6dce8, 0x91de, 0x4f70, { 0x92, 0xbe, 0x8d, 0xce, 0x4f, 0x6b, 0x0a, 0x7d } };
 static const GUID OverwriteGuid = { 0x18d7edf9, 0xa2ef, 0x4081, { 0xa3, 0xcf, 0x9e, 0xdf, 0x50, 0x7c, 0x1b, 0x8e } };
 static const GUID DeleteGuid    = { 0x29e8fe0a, 0xb3f0, 0x4192, { 0xb4, 0xd0, 0xaf, 0xe0, 0x61, 0x8d, 0x2c, 0x9f } };
+static const GUID CopyGuid      = { 0x3af90f1b, 0xc401, 0x42a3, { 0x85, 0xe1, 0xb0, 0xf1, 0x72, 0xae, 0x3d, 0xa0 } };
+static const GUID ItemErrorGuid = { 0x4b0a102c, 0xd512, 0x43b4, { 0x96, 0xf2, 0xc1, 0x02, 0x83, 0xbf, 0x4e, 0xb1 } };
 
 // Message IDs - keep in sync with GoogleDrive*.lng
 enum
@@ -97,6 +99,25 @@ enum
 	MReplace,
 	MSaveNotSupported,
 	MAuthExpired,
+	MCopyTitle,
+	MMoveTitle,
+	MCopyPrompt,
+	MMovePrompt,
+	MMovePromptPerm,
+	MItemsSelected,
+	MRestoreTitle,
+	MRestoreQuestion,
+	MRestore,
+	MItemError,
+	MRetry,
+	MSkipAllErrors,
+	MCancelOpQuestion,
+	MFolderExists,
+	MBadExportExt,
+	MExportDrawing,
+	MSignInHint,
+	MSignInUrlCopied,
+	MGoogleFileViewOnly,
 };
 
 // ---------------------------------------------------------------------------
@@ -211,7 +232,13 @@ public:
 
 	bool update(const std::wstring& line1, const std::wstring& line2, uint64_t done, uint64_t total, bool force = false)
 	{
-		if (CheckForEsc()) return false;
+		if (CheckForEsc())
+		{
+			// like Far's own copy dialog: confirm before throwing away a running transfer
+			if (!m_visible) return false;
+			if (Message(FMSG_WARNING | FMSG_MB_YESNO, MsgGuid, { m_title, M(MCancelOpQuestion) }) == 0) return false;
+			force = true;
+		}
 		ULONGLONG now = GetTickCount64();
 		if (!force && now - m_last < 150) return true;
 		m_last = now;
@@ -318,6 +345,7 @@ public:
 		m_entries = fetch(curId());
 		m_entriesFor = curId();
 		m_fresh = false;
+		if (GetTickCount64() - m_aboutTick > 30000) loadAbout();   // keep quota / free space current
 	}
 
 	std::vector<Entry> fetch(const std::string& id)
@@ -369,14 +397,23 @@ public:
 		return nullptr;
 	}
 
-	// Change directory: "..", "name", "a\b\c", "\" (root) or "\a\b".
+	// Change directory: "..", "name", "a\b\c", "\" (root) or "\a\b". On failure the previous
+	// location is kept, so the listing and the title never disagree.
 	bool chdir(const std::wstring& dir)
 	{
 		std::wstring d = dir;
 		if (d.empty() || d == L"\\" || d == L"/") { toRoot(); return true; }
-		if (d[0] == L'\\' || d[0] == L'/') { toRoot(); d.erase(0, 1); }
+		std::vector<Level> saved = m_path;
+		if (d[0] == L'\\' || d[0] == L'/')
+		{
+			// Far re-sends our own CurDir after opening a folder shortcut: already there
+			if (_wcsicmp(d.c_str(), m_curDir.c_str()) == 0) return true;
+			toRoot();
+			d.erase(0, 1);
+		}
+		bool ok = true;
 		size_t pos = 0;
-		while (pos <= d.size())
+		while (ok && pos <= d.size())
 		{
 			size_t sep = d.find_first_of(L"\\/", pos);
 			if (sep == std::wstring::npos) sep = d.size();
@@ -389,18 +426,20 @@ public:
 				continue;
 			}
 			const Entry* e = find(comp.c_str());
-			if (!e || !e->isFolder()) return false;
+			if (!e || !e->isFolder()) { ok = false; break; }
 			m_path.push_back({ e->pseudo ? e->id : e->effectiveId(), e->display });
 			invalidate();
 		}
+		if (!ok) { m_path = saved; invalidate(); }
 		updateStrings();
-		return true;
+		return ok;
 	}
 
 	void toRoot() { m_path.resize(1); invalidate(); updateStrings(); }
 
 	void loadAbout()
 	{
+		m_aboutTick = GetTickCount64();
 		try { m_about = g_drive->about(); m_aboutLoaded = true; }
 		catch (...) { m_aboutLoaded = false; }
 		if (m_aboutLoaded && !m_about.email.empty() && g_cfg.account_email != m_about.email)
@@ -455,17 +494,21 @@ public:
 	}
 
 	std::vector<Entry> m_entries;
+	// Ids of entries the last silent (plugin-to-plugin) GetFiles did not copy completely.
+	// A following silent DeleteFiles must leave them alone.
+	std::set<std::string> m_notMovable;
 
 private:
 	void updateStrings()
 	{
-		m_curDir.clear();
+		// absolute, so that Far's SetDirectory(CurDir) after a folder shortcut is not taken as relative
+		m_curDir = L"\\";
 		for (size_t i = 1; i < m_path.size(); ++i)
 		{
 			if (i > 1) m_curDir += L'\\';
 			m_curDir += m_path[i].name;
 		}
-		m_title = L" Google Drive:\\" + m_curDir + L" ";
+		m_title = L" Google Drive:" + m_curDir + L" ";
 		m_shortcut = serialize();
 
 		m_infoAccount = utf8_to_wide(m_about.email.empty() ? g_cfg.account_email : m_about.email);
@@ -488,6 +531,7 @@ private:
 	std::vector<InfoPanelLine> m_info;
 	DriveAbout m_about;
 	bool m_aboutLoaded = false;
+	ULONGLONG m_aboutTick = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -496,14 +540,18 @@ private:
 static bool DoSignIn()
 {
 	if (!EnsureHttp()) return false;
-	std::vector<std::wstring> lines{ M(MTitle), M(MSignInWaiting), M(MSignInEsc) };
+	std::vector<std::wstring> lines{ M(MTitle), M(MSignInWaiting), M(MSignInHint), M(MSignInUrlCopied), M(MSignInEsc) };
 	HANDLE scr = PSI.SaveScreen(0, 0, -1, -1);
 	Message(FMSG_LEFTALIGN, ProgressGuid, lines);
 	bool ok = false;
 	try
 	{
 		CheckForEsc();   // drain pending input
-		oauth::sign_in(g_cfg, *g_http, [] { return !CheckForEsc(); });
+		oauth::sign_in(g_cfg, *g_http, [] { return !CheckForEsc(); },
+			[](const std::string& url) {
+				// if the browser does not open, the user can still paste the link
+				if (FSF.CopyToClipboard) FSF.CopyToClipboard(FCT_STREAM, utf8_to_wide(url).c_str());
+			});
 		try { g_cfg.account_email = g_drive->about().email; g_cfg.save(); } catch (...) {}
 		ok = true;
 	}
@@ -526,12 +574,13 @@ static intptr_t ShowConfig()
 	bool changed = false;
 	for (;;)
 	{
-		wchar_t clientId[512], secret[256], expDoc[16], expSheet[16], expSlides[16];
+		wchar_t clientId[512], secret[256], expDoc[16], expSheet[16], expSlides[16], expDrawing[16];
 		ToBuf(clientId, 512, g_cfg.client_id);
 		ToBuf(secret, 256, g_cfg.client_secret);
 		ToBuf(expDoc, 16, g_cfg.export_doc);
 		ToBuf(expSheet, 16, g_cfg.export_sheet);
 		ToBuf(expSlides, 16, g_cfg.export_slides);
+		ToBuf(expDrawing, 16, g_cfg.export_drawing);
 		int trash = g_cfg.trash_on_delete ? 1 : 0;
 		int disks = g_cfg.add_to_disks_menu ? 1 : 0;
 
@@ -561,6 +610,7 @@ static intptr_t ShowConfig()
 		auto* e1 = b.AddEditField(expDoc, 16, 8);    b.AddTextBefore(e1, MExportDoc);
 		auto* e2 = b.AddEditField(expSheet, 16, 8);  b.AddTextBefore(e2, MExportSheet);
 		auto* e3 = b.AddEditField(expSlides, 16, 8); b.AddTextBefore(e3, MExportSlides);
+		auto* e4 = b.AddEditField(expDrawing, 16, 8); b.AddTextBefore(e4, MExportDrawing);
 		b.AddSeparator();
 		b.AddText(status.c_str());
 		const int buttons[] = { MSignIn, MSignOut, MOk, MCancel };
@@ -580,9 +630,22 @@ static intptr_t ShowConfig()
 		g_cfg.trash_on_delete = trash != 0;
 		g_cfg.add_to_disks_menu = disks != 0;
 		auto ext = [](const wchar_t* w, const char* def) { std::string s = to_lower(wide_to_utf8(w)); if (!s.empty() && s[0] == '.') s.erase(0, 1); return s.empty() ? def : s; };
-		g_cfg.export_doc = ext(expDoc, "docx");
-		g_cfg.export_sheet = ext(expSheet, "xlsx");
-		g_cfg.export_slides = ext(expSlides, "pptx");
+		const std::pair<const char*, std::string> wanted[] = {
+			{ "doc", ext(expDoc, "docx") }, { "sheet", ext(expSheet, "xlsx") },
+			{ "slides", ext(expSlides, "pptx") }, { "drawing", ext(expDrawing, "png") } };
+		bool valid = true;
+		for (auto& [kind, v] : wanted)
+		{
+			if (valid_export_ext(kind, v)) continue;
+			ShowError(std::wstring(M(MBadExportExt)) + L" " + utf8_to_wide(allowed_export_exts(kind)) + L"  (" + utf8_to_wide(v) + L")");
+			valid = false;
+			break;
+		}
+		if (!valid) continue;   // re-show the dialog with the stored values
+		g_cfg.export_doc = wanted[0].second;
+		g_cfg.export_sheet = wanted[1].second;
+		g_cfg.export_slides = wanted[2].second;
+		g_cfg.export_drawing = wanted[3].second;
 		SaveConfigReporting();
 		changed = true;
 
@@ -626,8 +689,69 @@ struct OpStats
 {
 	int skipped = 0;
 	std::wstring firstSkipReason;
+	bool silent = false;          // no prompts allowed (OPM_SILENT)
+	bool skipAllErrors = false;   // user chose "Skip all errors"
 	void skip(const std::wstring& reason) { ++skipped; if (firstSkipReason.empty()) firstSkipReason = reason; }
 };
+
+// Per-item error handling: Retry / Skip / Skip all / Cancel. Returns true to retry the item,
+// false to skip it (already counted). Sign-in problems are never per-item and propagate.
+static bool HandleItemError(const std::wstring& name, const GdError& err, OpStats& st)
+{
+	if (dynamic_cast<const GdAuthError*>(&err)) throw err;
+	std::wstring text = utf8_to_wide(err.what());
+	if (st.silent || st.skipAllErrors)
+	{
+		st.skip(name + L": " + text);
+		return false;
+	}
+	std::vector<std::wstring> lines{ M(MItemError), name };
+	for (auto& l : WrapText(text, 70, 5)) lines.push_back(l);
+	intptr_t r = Message(FMSG_WARNING, ItemErrorGuid, lines, { M(MRetry), M(MSkip), M(MSkipAllErrors), M(MCancel) });
+	switch (r)
+	{
+	case 0: return true;
+	case 1: st.skip(name + L": " + text); return false;
+	case 2: st.skipAllErrors = true; st.skip(name + L": " + text); return false;
+	default: throw GdCancel{};
+	}
+}
+
+// Copy/Move dialog shown for F5/F6 from Drive to a local panel (Far leaves it to the plugin).
+// Returns false when cancelled; `dest` receives the chosen folder.
+static bool AskDestination(std::wstring& dest, size_t count, bool move, bool permanent)
+{
+	wchar_t buf[2048];
+	wcsncpy(buf, dest.c_str(), 2047);
+	buf[2047] = 0;
+	std::wstring what = std::to_wstring(count) + L" " + M(MItemsSelected);
+	PluginDialogBuilder b(PSI, PluginGuid, CopyGuid, move ? MMoveTitle : MCopyTitle, L"Contents");
+	b.AddText(what.c_str());
+	b.AddText(move ? (permanent ? MMovePromptPerm : MMovePrompt) : MCopyPrompt);
+	b.AddEditField(buf, 2048, 60, L"GoogleDriveCopyTo");
+	b.AddOKCancel(MOk, MCancel);
+	if (!b.ShowDialog()) return false;
+	std::wstring d = buf;
+	while (!d.empty() && d.back() == L' ') d.pop_back();
+	while (!d.empty() && d.front() == L' ') d.erase(0, 1);
+	if (d.empty()) return false;
+	if (d.size() >= 2 && d.front() == L'"' && d.back() == L'"') d = d.substr(1, d.size() - 2);
+	bool absolute = (d.size() >= 2 && d[1] == L':') || (d.size() >= 2 && d[0] == L'\\' && d[1] == L'\\');
+	if (!absolute) d = dest + L"\\" + d;
+	while (d.size() > 3 && (d.back() == L'\\' || d.back() == L'/')) d.pop_back();
+	dest = d;
+	return true;
+}
+
+// Creates every missing component of an absolute folder path.
+static void CreateDirectoryTree(const std::wstring& path)
+{
+	std::wstring lp = long_path(path);
+	size_t start = lp.find(L'\\', lp.compare(0, 4, L"\\\\?\\") == 0 ? 7 : 3);
+	for (size_t p = start; p != std::wstring::npos; p = lp.find(L'\\', p + 1))
+		CreateDirectoryW(lp.substr(0, p).c_str(), nullptr);
+	CreateDirectoryW(lp.c_str(), nullptr);
+}
 
 // Plain-text-ish export used when a Google document is opened with F3/F4.
 static const char* ViewExportExt(const std::string& mime)
@@ -644,10 +768,11 @@ enum class CopyResult { Skipped, Copied, Exported };
 
 // Downloads one panel entry (recursively for folders). A folder counts as Copied only when every
 // child was Copied; it is Exported when nothing was skipped but some children were exports.
-// viewMode: F3/F4/QuickView - the local name must equal the panel name, so no extension is added.
+// keepName: the local name must equal the panel name (F3/F4/QuickView temp files, and Far's silent
+//           plugin-to-plugin mode, where Far later looks the files up by their panel names).
 // visited: folder ids already entered in this operation (shortcuts can form cycles).
 static CopyResult DownloadEntry(Panel& p, const Entry& e, const std::wstring& destDir, Progress& prog, Overwrite& ow,
-	OpStats& st, bool viewMode, std::set<std::string>& visited)
+	OpStats& st, bool viewMode, bool keepName, std::set<std::string>& visited)
 {
 	std::wstring local = destDir + L"\\" + e.display;
 	if (e.isFolder())
@@ -661,10 +786,16 @@ static CopyResult DownloadEntry(Panel& p, const Entry& e, const std::wstring& de
 		if (!CreateDirectoryW(long_path(local).c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
 			throw GdError("Cannot create folder " + wide_to_utf8(local) + ": " + wide_to_utf8(win_error_text(GetLastError())));
 		ThrowIfCancelled(prog.update(e.display, L"", 0, 0, true));
-		CopyResult result = CopyResult::Copied;
-		for (auto& child : p.fetch(fid))
+		std::vector<Entry> children;
+		for (;;)
 		{
-			CopyResult r = DownloadEntry(p, child, local, prog, ow, st, viewMode, visited);
+			try { children = p.fetch(fid); break; }
+			catch (const GdError& err) { if (!HandleItemError(e.display, err, st)) return CopyResult::Skipped; }
+		}
+		CopyResult result = CopyResult::Copied;
+		for (auto& child : children)
+		{
+			CopyResult r = DownloadEntry(p, child, local, prog, ow, st, viewMode, keepName, visited);
 			if (r == CopyResult::Skipped) result = CopyResult::Skipped;
 			else if (r == CopyResult::Exported && result == CopyResult::Copied) result = CopyResult::Exported;
 		}
@@ -687,7 +818,7 @@ static CopyResult DownloadEntry(Panel& p, const Entry& e, const std::wstring& de
 			return CopyResult::Skipped;
 		}
 		std::wstring wext = L"." + utf8_to_wide(ext);
-		if (!viewMode && (local.size() < wext.size() || _wcsicmp(local.c_str() + local.size() - wext.size(), wext.c_str()) != 0))
+		if (!keepName && (local.size() < wext.size() || _wcsicmp(local.c_str() + local.size() - wext.size(), wext.c_str()) != 0))
 			local += wext;
 	}
 	if (!viewMode && GetFileAttributesW(long_path(local).c_str()) != INVALID_FILE_ATTRIBUTES)
@@ -695,9 +826,17 @@ static CopyResult DownloadEntry(Panel& p, const Entry& e, const std::wstring& de
 		if (!AskOverwrite(local, ow)) { st.skip(L""); return CopyResult::Skipped; }
 	}
 	ThrowIfCancelled(prog.update(e.display, local, 0, f.size, true));
-	g_drive->download(f, local, [&](uint64_t done, uint64_t total) {
-		return prog.update(e.display, local, done, total ? total : f.size);
-	}, exportOverride);
+	for (;;)
+	{
+		try
+		{
+			g_drive->download(f, local, [&](uint64_t done, uint64_t total) {
+				return prog.update(e.display, local, done, total ? total : f.size);
+			}, exportOverride);
+			break;
+		}
+		catch (const GdError& err) { if (!HandleItemError(e.display, err, st)) return CopyResult::Skipped; }
+	}
 	return f.isGoogleDoc() ? CopyResult::Exported : CopyResult::Copied;
 }
 
@@ -737,9 +876,17 @@ static void UploadPath(const std::wstring& localPath, const std::wstring& name, 
 		else
 		{
 			ThrowIfCancelled(prog.update(name, L"", 0, 0, true));
-			DriveFile created = g_drive->createFolder(parentId, uname);
-			cache[parentId].push_back(created);
-			folderId = created.id;
+			for (;;)
+			{
+				try
+				{
+					DriveFile created = g_drive->createFolder(parentId, uname);
+					cache[parentId].push_back(created);
+					folderId = created.id;
+					break;
+				}
+				catch (const GdError& err) { if (!HandleItemError(name, err, st)) return; }
+			}
 		}
 		WIN32_FIND_DATAW fd;
 		HANDLE h = FindFirstFileW(long_path(localPath + L"\\*").c_str(), &fd);
@@ -774,9 +921,18 @@ static void UploadPath(const std::wstring& localPath, const std::wstring& name, 
 		existingId = f->effectiveId();
 	}
 	ThrowIfCancelled(prog.update(name, localPath, 0, 0, true));
-	DriveFile up = g_drive->upload(parentId, uname, localPath, existingId, [&](uint64_t done, uint64_t total) {
-		return prog.update(name, localPath, done, total);
-	});
+	DriveFile up;
+	for (;;)
+	{
+		try
+		{
+			up = g_drive->upload(parentId, uname, localPath, existingId, [&](uint64_t done, uint64_t total) {
+				return prog.update(name, localPath, done, total);
+			});
+			break;
+		}
+		catch (const GdError& err) { if (!HandleItemError(name, err, st)) return; }
+	}
 	if (existingId.empty()) cache[parentId].push_back(up);
 	if (move) DeleteFileW(long_path(localPath).c_str());
 }
@@ -971,11 +1127,19 @@ intptr_t WINAPI GetFindDataW(GetFindDataInfo* info)
 		return FALSE;
 	}
 
-	size_t n = p->m_entries.size();
+	// Far's file search (Alt+F7) enters every folder it is shown: keep it out of the pseudo
+	// folders (Trash, every shared drive...) and of shortcut folders, which can form cycles.
+	std::vector<const Entry*> shown;
+	for (auto& e : p->m_entries)
+	{
+		if ((info->OpMode & OPM_FIND) && (e.pseudo || (e.isShortcut && e.isFolder()))) continue;
+		shown.push_back(&e);
+	}
+	size_t n = shown.size();
 	PluginPanelItem* items = n ? new PluginPanelItem[n]() : nullptr;
 	for (size_t i = 0; i < n; ++i)
 	{
-		const Entry& e = p->m_entries[i];
+		const Entry& e = *shown[i];
 		PluginPanelItem& it = items[i];
 		it.FileName = _wcsdup(e.display.c_str());
 		it.AlternateFileName = nullptr;
@@ -1022,12 +1186,42 @@ intptr_t WINAPI GetFilesW(GetFilesInfo* info)
 	bool silent = (info->OpMode & OPM_SILENT) != 0;
 	bool showUi = !(info->OpMode & OPM_FIND);
 	bool viewMode = (info->OpMode & (OPM_VIEW | OPM_EDIT | OPM_QUICKVIEW)) != 0;
+	bool interactive = !silent && !viewMode && showUi;   // F5/F6 from the user: show the Copy/Move dialog
+	// Silent non-view mode is Far copying into a temp folder for another plugin panel; it will look
+	// the files up by their panel names afterwards, so no export extension may be added.
+	bool keepName = viewMode || silent;
 	Overwrite ow = silent ? Overwrite::All : Overwrite::Ask;
 	OpStats st;
+	st.silent = silent;
 
 	std::wstring dest = info->DestPath;
 	while (!dest.empty() && (dest.back() == L'\\' || dest.back() == L'/')) dest.pop_back();
 	if (dest.empty()) dest = L".";
+
+	// resolve the selection first (pseudo folders are skipped in a multi-selection)
+	std::vector<const Entry*> selection;
+	try
+	{
+		size_t real = 0;
+		for (size_t i = 0; i < info->ItemsNumber; ++i)
+		{
+			const wchar_t* name = info->PanelItem[i].FileName;
+			if (!name || !wcscmp(name, L"..")) continue;
+			if (const Entry* e = p->find(name)) selection.push_back(e);
+		}
+		for (auto* e : selection) if (!e->pseudo) ++real;
+		if (real > 0)
+			selection.erase(std::remove_if(selection.begin(), selection.end(), [](const Entry* e) { return e->pseudo; }), selection.end());
+	}
+	catch (const std::exception& e) { if (showUi) ShowError(e.what()); return 0; }
+	if (selection.empty()) return 1;
+
+	bool permanent = p->inTrash() || !g_cfg.trash_on_delete;
+	if (interactive)
+	{
+		if (!AskDestination(dest, selection.size(), info->Move != 0, permanent)) return -1;
+		CreateDirectoryTree(dest);
+	}
 
 	try
 	{
@@ -1035,17 +1229,23 @@ intptr_t WINAPI GetFilesW(GetFilesInfo* info)
 		std::set<std::string> visited{ p->curId() };
 		std::vector<const Entry*> copied;     // fully copied items - the only ones a move may delete
 		bool anySkipped = false, anyExported = false;
-		for (size_t i = 0; i < info->ItemsNumber; ++i)
+		p->m_notMovable.clear();
+		for (auto* e : selection)
 		{
-			const wchar_t* name = info->PanelItem[i].FileName;
-			if (!name || !wcscmp(name, L"..")) continue;
-			const Entry* e = p->find(name);
-			if (!e) continue;
-			switch (DownloadEntry(*p, *e, dest, prog, ow, st, viewMode, visited))
+			CopyResult r = DownloadEntry(*p, *e, dest, prog, ow, st, viewMode, keepName, visited);
+			switch (r)
 			{
 			case CopyResult::Copied: copied.push_back(e); break;
 			case CopyResult::Exported: anyExported = true; break;
 			case CopyResult::Skipped: anySkipped = true; break;
+			}
+			if (r != CopyResult::Copied) p->m_notMovable.insert(e->id);
+			if ((info->OpMode & OPM_EDIT) && e->isGoogleDoc() && e->effectiveMime() != "application/vnd.google-apps.document")
+			{
+				// F4 on a Sheet / Slides: what the editor gets is a partial export that cannot go back
+				std::wstring local = dest + L"\\" + e->display;
+				SetFileAttributesW(long_path(local).c_str(), FILE_ATTRIBUTE_READONLY);
+				ShowInfo(M(MWarning), M(MGoogleFileViewOnly));
 			}
 		}
 		if (info->Move)
@@ -1068,7 +1268,8 @@ intptr_t WINAPI GetFilesW(GetFilesInfo* info)
 		if (showUi) ShowError(e.what());
 		return 0;
 	}
-	if (showUi && !silent) ReportSkipped(st);
+	if (viewMode && st.skipped && !st.firstSkipReason.empty()) ShowError(st.firstSkipReason);   // e.g. F3 on a Form
+	else if (showUi && !silent) ReportSkipped(st);
 	return 1;
 }
 
@@ -1175,8 +1376,16 @@ intptr_t WINAPI DeleteFilesW(const DeleteFilesInfo* info)
 			if (!name || !wcscmp(name, L"..")) continue;
 			const Entry* e = p->find(name);
 			if (!e) continue;
-			if (e->pseudo) refused = true;
-			else targets.push_back(e);
+			if (e->pseudo) { refused = true; continue; }
+			if (silent)
+			{
+				// Silent deletes come from Far's plugin-to-plugin move (temp copy, then delete the
+				// originals). Protect what that copy could not have carried: Google-native documents
+				// (only lossy exports), anything the preceding GetFiles did not copy completely, and
+				// everything inside the Trash, where a delete is permanent.
+				if (e->isGoogleDoc() || p->m_notMovable.count(e->id) || p->inTrash()) continue;
+			}
+			targets.push_back(e);
 		}
 	}
 	catch (const std::exception& e) { if (!silent) ShowError(e.what()); return 0; }
@@ -1233,6 +1442,17 @@ intptr_t WINAPI MakeDirectoryW(MakeDirectoryInfo* info)
 	if (name.empty()) return -1;
 	try
 	{
+		// Drive would happily create a second folder with the same name; Far users expect an error
+		p->ensureEntries();
+		for (auto& e : p->m_entries)
+		{
+			if (e.isFolder() && !e.pseudo && (_wcsicmp(e.display.c_str(), name.c_str()) == 0
+				|| _wcsicmp(utf8_to_wide(e.name).c_str(), name.c_str()) == 0))
+			{
+				if (!silent) ShowError(M(MFolderExists));
+				return 0;
+			}
+		}
 		Progress prog(M(MMkdirTitle), !silent);
 		prog.update(name, L"", 0, 0, true);
 		g_drive->createFolder(p->curId(), wide_to_utf8(name));
@@ -1245,6 +1465,50 @@ intptr_t WINAPI MakeDirectoryW(MakeDirectoryInfo* info)
 	return 1;
 }
 
+// Name of the panel item under the cursor ("" if none).
+static std::wstring CurrentItemName(HANDLE hPanel)
+{
+	size_t sz = PSI.PanelControl(hPanel, FCTL_GETCURRENTPANELITEM, 0, nullptr);
+	if (!sz) return L"";
+	std::vector<char> buf(sz);
+	FarGetPluginPanelItem gpi{ sizeof gpi, sz, (PluginPanelItem*)buf.data() };
+	if (!PSI.PanelControl(hPanel, FCTL_GETCURRENTPANELITEM, 0, &gpi) || !gpi.Item->FileName) return L"";
+	return gpi.Item->FileName;
+}
+
+// Names of the selected panel items, or the current item when nothing is selected.
+static std::vector<std::wstring> SelectedItemNames(HANDLE hPanel)
+{
+	std::vector<std::wstring> names;
+	PanelInfo pi{ sizeof pi };
+	if (PSI.PanelControl(hPanel, FCTL_GETPANELINFO, 0, &pi))
+	{
+		for (size_t i = 0; i < pi.SelectedItemsNumber; ++i)
+		{
+			size_t sz = PSI.PanelControl(hPanel, FCTL_GETSELECTEDPANELITEM, i, nullptr);
+			if (!sz) continue;
+			std::vector<char> buf(sz);
+			FarGetPluginPanelItem gpi{ sizeof gpi, sz, (PluginPanelItem*)buf.data() };
+			if (PSI.PanelControl(hPanel, FCTL_GETSELECTEDPANELITEM, i, &gpi) && gpi.Item->FileName
+				&& (gpi.Item->Flags & PPIF_SELECTED))
+				names.push_back(gpi.Item->FileName);
+		}
+	}
+	if (names.empty())
+	{
+		std::wstring cur = CurrentItemName(hPanel);
+		if (!cur.empty()) names.push_back(cur);
+	}
+	names.erase(std::remove(names.begin(), names.end(), std::wstring(L"..")), names.end());
+	return names;
+}
+
+static void RedrawPanel(HANDLE hPanel)
+{
+	PSI.PanelControl(hPanel, FCTL_UPDATEPANEL, 1, nullptr);
+	PSI.PanelControl(hPanel, FCTL_REDRAWPANEL, 0, nullptr);
+}
+
 intptr_t WINAPI ProcessPanelInputW(const ProcessPanelInputInfo* info)
 {
 	const KEY_EVENT_RECORD& k = info->Rec.Event.KeyEvent;
@@ -1252,21 +1516,57 @@ intptr_t WINAPI ProcessPanelInputW(const ProcessPanelInputInfo* info)
 	DWORD cs = k.dwControlKeyState;
 	bool shift = (cs & SHIFT_PRESSED) != 0;
 	bool ctrlAlt = (cs & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED | LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0;
-	if (k.wVirtualKeyCode != VK_F6 || !shift || ctrlAlt) return FALSE;
-
-	// Shift+F6: rename the current item
 	Panel* p = (Panel*)info->hPanel;
-	size_t sz = PSI.PanelControl(info->hPanel, FCTL_GETCURRENTPANELITEM, 0, nullptr);
-	if (!sz) return TRUE;
-	std::vector<char> buf(sz);
-	FarGetPluginPanelItem gpi{ sizeof gpi, sz, (PluginPanelItem*)buf.data() };
-	if (!PSI.PanelControl(info->hPanel, FCTL_GETCURRENTPANELITEM, 0, &gpi)) return TRUE;
-	const wchar_t* name = gpi.Item->FileName;
-	if (!name || !wcscmp(name, L"..")) return TRUE;
+
+	bool rename = k.wVirtualKeyCode == VK_F6 && shift && !ctrlAlt;
+	bool restore = k.wVirtualKeyCode == VK_F6 && !shift && !ctrlAlt && p->inTrash();
+	bool enter = k.wVirtualKeyCode == VK_RETURN && !shift && !ctrlAlt;
+	if (!rename && !restore && !enter) return FALSE;
 
 	try
 	{
-		const Entry* e = p->find(name);
+		if (enter)
+		{
+			// Enter on a Google document opens it in the browser (Far would otherwise run a
+			// plain-text export without an extension). A typed command line takes precedence.
+			if (PSI.PanelControl(PANEL_ACTIVE, FCTL_GETCMDLINE, 0, nullptr) > 1) return FALSE;
+			std::wstring name = CurrentItemName(info->hPanel);
+			if (name.empty() || name == L"..") return FALSE;
+			const Entry* e = p->find(name.c_str());
+			if (!e || e->isFolder() || !e->isGoogleDoc() || e->webViewLink.empty()) return FALSE;
+			ShellExecuteW(nullptr, L"open", utf8_to_wide(e->webViewLink).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+			return TRUE;
+		}
+
+		if (restore)
+		{
+			// F6 inside the Trash restores instead of moving (a move out of the Trash would be a
+			// permanent delete of the original).
+			std::vector<const Entry*> targets;
+			for (auto& n : SelectedItemNames(info->hPanel))
+				if (const Entry* e = p->find(n.c_str()); e && !e->pseudo) targets.push_back(e);
+			if (targets.empty()) return TRUE;
+			std::wstring what = targets.size() == 1 ? targets[0]->display : std::to_wstring(targets.size()) + L" " + M(MItems);
+			if (Message(FMSG_WARNING, DeleteGuid, { M(MRestoreTitle), M(MRestoreQuestion), what }, { M(MRestore), M(MCancel) }) != 0)
+				return TRUE;
+			{
+				Progress prog(M(MRestoreTitle), true);
+				size_t i = 0;
+				for (auto* e : targets)
+				{
+					ThrowIfCancelled(prog.update(e->display, L"", i++, targets.size(), true));
+					g_drive->untrash(e->id);
+				}
+			}
+			p->invalidate();
+			RedrawPanel(info->hPanel);
+			return TRUE;
+		}
+
+		// Shift+F6: rename the current item
+		std::wstring name = CurrentItemName(info->hPanel);
+		if (name.empty() || name == L"..") return TRUE;
+		const Entry* e = p->find(name.c_str());
 		if (!e) return TRUE;
 		if (e->pseudo || p->inTrash()) { ShowError(M(MNotAllowedHere)); return TRUE; }
 		wchar_t newName[512] = {};
@@ -1277,11 +1577,10 @@ intptr_t WINAPI ProcessPanelInputW(const ProcessPanelInputInfo* info)
 		if (!newName[0] || old == newName) return TRUE;
 		g_drive->rename(e->id, wide_to_utf8(newName));
 		p->invalidate();
-		PSI.PanelControl(info->hPanel, FCTL_UPDATEPANEL, 1, nullptr);
-		PSI.PanelControl(info->hPanel, FCTL_REDRAWPANEL, 0, nullptr);
+		RedrawPanel(info->hPanel);
 	}
-	catch (const GdCancel&) {}
-	catch (const std::exception& ex) { ShowError(ex.what()); }
+	catch (const GdCancel&) { p->invalidate(); RedrawPanel(info->hPanel); }
+	catch (const std::exception& ex) { p->invalidate(); ShowError(ex.what()); RedrawPanel(info->hPanel); }
 	return TRUE;
 }
 
