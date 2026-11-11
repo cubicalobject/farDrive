@@ -312,6 +312,27 @@ int main(int argc, char** argv)
 			&& qParam(fake.log[1].url).find(L"trashed%20%3D%20false") != std::wstring::npos,
 			"listChildren drops the trashed filter inside the Trash");
 
+		// server-side move / copy / parents / ancestor check
+		fake.log.clear();
+		fake.script.push_back(Const(200, R"({"id":"f1"})"));
+		drive.move("f1", "newP", "oldP");
+		check(fake.log[0].method == L"PATCH" && fake.log[0].url.find(L"addParents=newP") != std::wstring::npos
+			&& fake.log[0].url.find(L"removeParents=oldP") != std::wstring::npos, "move uses addParents/removeParents");
+		fake.log.clear();
+		fake.script.push_back(Const(200, R"({"id":"c1","name":"Doc","mimeType":"application/vnd.google-apps.document"})"));
+		DriveFile cp = drive.copyFile("f1", "dest", "Doc");
+		check(cp.id == "c1" && fake.log[0].method == L"POST" && fake.log[0].url.find(L"files/f1/copy") != std::wstring::npos
+			&& fake.log[0].body.find("\"parents\":[\"dest\"]") != std::string::npos, "copyFile posts to files/{id}/copy with parents");
+		fake.log.clear();
+		fake.script.push_back(Const(200, R"({"parents":["p1"]})"));   // parents(x) -> p1
+		fake.script.push_back(Const(200, R"({"parents":["root"]})")); // parents(p1) -> root
+		fake.script.push_back(Const(200, R"({})"));                    // parents(root) -> none
+		check(!drive.isSameOrAncestor("zzz", "x") && fake.log.size() == 3, "isSameOrAncestor walks up to the root");
+		fake.log.clear();
+		fake.script.push_back(Const(200, R"({"parents":["target"]})"));
+		check(drive.isSameOrAncestor("target", "x") && fake.log.size() == 1, "isSameOrAncestor finds a parent");
+		check(drive.isSameOrAncestor("x", "x"), "isSameOrAncestor: same folder");
+
 		// Starred pseudo-folder queries starred, non-trashed items
 		fake.log.clear();
 		fake.script.push_back(Const(200, R"({"files":[{"id":"s1","name":"Fav"}]})"));

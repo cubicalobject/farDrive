@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.0.6 - 2026-11-11
+
+- Server-side copy and move between two Google Drive panels. F5 uses Drive's
+  copy (Google Docs stay native, Forms can be copied, shortcuts are copied as
+  shortcuts, folder trees are recreated); F6 re-parents the items in place,
+  so IDs, sharing, comments and revision history are kept. Nothing is
+  downloaded. Shift+F5/F6 act on the current item only. Moving a folder into
+  itself is refused; moving from Starred / Shared with me reads the item's real
+  parent; permission failures offer Retry / Skip with a hint to copy instead.
+  Other plugin panels (archives, FTP) still use Far's temp-folder path.
+
 ## 1.0.0.5 - 2026-11-11
 
 Fixes from an independent code review.

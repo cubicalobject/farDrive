@@ -170,3 +170,15 @@
 "This is an export of the first sheet / the plain text of a Google file. It is opened read-only; changes cannot be saved back. Press Enter on the item to open it in the browser."
 // MStarred
 "Starred"
+// MDriveCopyQ
+"Copy on Google Drive (server-side, native formats kept) to:"
+// MDriveMoveQ
+"Move on Google Drive (server-side; IDs, sharing and history are kept) to:"
+// MCopyingOnDrive
+"Copying on Google Drive"
+// MMovingOnDrive
+"Moving on Google Drive"
+// MMoveIntoItself
+"A folder cannot be moved into itself or its own subfolder:"
+// MDriveMoveHint
+"You need edit rights on the item and both folders to move it. Copy it (F5) or create a shortcut in the Drive web UI instead."

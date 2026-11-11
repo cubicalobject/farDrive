@@ -252,6 +252,50 @@ public:
 			json{ {"name", newName} }.dump(), "application/json; charset=UTF-8");
 	}
 
+	// --- server-side copy / move ------------------------------------------------
+
+	std::vector<std::string> parents(const std::string& id)
+	{
+		json j = call(L"GET", std::string(kApiBase) + "files/" + url_encode(id) + "?fields=parents&supportsAllDrives=true");
+		std::vector<std::string> out;
+		if (j.contains("parents") && j["parents"].is_array())
+			for (auto& p : j["parents"]) out.push_back(p.get<std::string>());
+		return out;
+	}
+
+	// Re-parents an item (file or whole folder subtree) in place: same id, sharing, comments,
+	// revision history. oldParent may be empty when the item has no known parent.
+	void move(const std::string& id, const std::string& newParent, const std::string& oldParent)
+	{
+		std::string url = std::string(kApiBase) + "files/" + url_encode(id) + "?supportsAllDrives=true&addParents=" + url_encode(newParent)
+			+ (oldParent.empty() ? "" : "&removeParents=" + url_encode(oldParent)) + "&fields=id";
+		call(L"PATCH", url, "{}", "application/json; charset=UTF-8");
+	}
+
+	// Server-side copy of one file (not folders) into destParent. Google-native documents stay
+	// native; shortcuts are copied as shortcuts.
+	DriveFile copyFile(const std::string& id, const std::string& destParent, const std::string& name)
+	{
+		json body{ {"parents", json::array({destParent})} };
+		if (!name.empty()) body["name"] = name;
+		return parse(call(L"POST", std::string(kApiBase) + "files/" + url_encode(id) + "/copy?supportsAllDrives=true&fields=" + url_encode(kFileFields),
+			body.dump(), "application/json; charset=UTF-8", /*retry*/ false));
+	}
+
+	// True when `folderId` is `id` itself or one of its ancestors (walks parents, bounded depth).
+	bool isSameOrAncestor(const std::string& folderId, const std::string& id)
+	{
+		std::string cur = id;
+		for (int depth = 0; depth < 64 && !cur.empty(); ++depth)
+		{
+			if (cur == folderId) return true;
+			auto ps = parents(cur);
+			if (ps.empty()) return false;
+			cur = ps.front();
+		}
+		return false;
+	}
+
 	// --- content -----------------------------------------------------------
 
 	// Chooses the local extension for a Google-native document ("" if not exportable).

@@ -119,6 +119,12 @@ enum
 	MSignInUrlCopied,
 	MGoogleFileViewOnly,
 	MStarred,
+	MDriveCopyQ,
+	MDriveMoveQ,
+	MCopyingOnDrive,
+	MMovingOnDrive,
+	MMoveIntoItself,
+	MDriveMoveHint,
 };
 
 // ---------------------------------------------------------------------------
@@ -322,6 +328,7 @@ public:
 	Panel() { m_path.push_back({ "root", L"" }); updateStrings(); }
 
 	const std::string& curId() const { return m_path.back().id; }
+	const std::wstring& curDir() const { return m_curDir; }
 	bool isRoot() const { return m_path.size() == 1; }
 	bool inTrash() const { for (auto& l : m_path) if (l.id == kTrashId) return true; return false; }
 	bool isPseudoRoot() const { return curId() == kSharedId || curId() == kTrashId || curId() == kDrivesId || curId() == kStarredId; }
@@ -1564,6 +1571,151 @@ static void RedrawPanel(HANDLE hPanel)
 	PSI.PanelControl(hPanel, FCTL_REDRAWPANEL, 0, nullptr);
 }
 
+// The passive panel, if it is another Google Drive panel of this plugin.
+static Panel* OtherDrivePanel()
+{
+	PanelInfo pi{ sizeof pi };
+	if (!PSI.PanelControl(PANEL_PASSIVE, FCTL_GETPANELINFO, 0, &pi)) return nullptr;
+	if (pi.PanelType != PTYPE_FILEPANEL || !pi.PluginHandle || !IsEqualGUID(pi.OwnerGuid, PluginGuid)) return nullptr;
+	return (Panel*)pi.PluginHandle;
+}
+
+// Server-side copy of one entry into destId (recursive for folders). Returns false when skipped.
+static bool CopyEntryOnDrive(Panel& src, const Entry& e, bool srcInTrash, const std::string& destId,
+	ChildrenCache& cache, Progress& prog, Overwrite& ow, OpStats& st, std::set<std::string>& visited)
+{
+	ThrowIfCancelled(prog.update(e.display, L"", 0, 0, true));
+	if (e.isFolder() && !e.isShortcut)
+	{
+		if (!visited.insert(e.id).second) { st.skip(std::wstring(M(MFolderLoop)) + L" " + e.display); return false; }
+		std::string folderId;
+		if (const DriveFile* existing = FindChild(Children(cache, destId), e.name, true)) folderId = existing->effectiveId();
+		else
+		{
+			for (;;)
+			{
+				try { DriveFile f = g_drive->createFolder(destId, e.name); cache[destId].push_back(f); folderId = f.id; break; }
+				catch (const GdError& err) { if (!HandleItemError(e.display, err, st)) return false; }
+			}
+		}
+		std::vector<Entry> children;
+		for (;;)
+		{
+			try { children = src.fetch(e.id, srcInTrash); break; }
+			catch (const GdError& err) { if (!HandleItemError(e.display, err, st)) return false; }
+		}
+		bool all = true;
+		for (auto& c : children)
+			if (!CopyEntryOnDrive(src, c, srcInTrash, folderId, cache, prog, ow, st, visited)) all = false;
+		return all;
+	}
+	// file or shortcut: Drive's copy keeps native formats and copies shortcuts as shortcuts
+	const DriveFile* clash = FindChild(Children(cache, destId), e.name, false);
+	if (clash && clash->id == e.id) clash = nullptr;   // copying into its own folder: just create alongside
+	if (clash && !AskOverwrite(utf8_to_wide(e.name), ow)) { st.skip(L""); return false; }
+	for (;;)
+	{
+		try
+		{
+			DriveFile made = g_drive->copyFile(e.id, destId, e.name);
+			if (clash) g_drive->trash(clash->id);   // "overwrite": the old one goes to the Trash
+			cache[destId].push_back(made);
+			break;
+		}
+		catch (const GdError& err) { if (!HandleItemError(e.display, err, st)) return false; }
+	}
+	return true;
+}
+
+// F5/F6 between two Google Drive panels: do it on Google's side instead of Far's download +
+// re-upload. Returns true when the key was handled.
+static bool DriveToDriveTransfer(Panel* src, HANDLE hSrc, bool move, bool currentOnly)
+{
+	Panel* dest = OtherDrivePanel();
+	if (!dest || dest == src) return false;
+	if (move && src->inTrash()) return false;         // F6 in the Trash is "restore"
+	if (!dest->canWrite()) { ShowError(M(MNotAllowedHere)); return true; }
+
+	try
+	{
+		std::vector<const Entry*> items;
+		std::vector<std::wstring> names;
+		if (currentOnly) { std::wstring c = CurrentItemName(hSrc); if (!c.empty() && c != L"..") names.push_back(c); }
+		else names = SelectedItemNames(hSrc);
+		for (auto& n : names)
+			if (const Entry* e = src->find(n.c_str()); e && !e->pseudo) items.push_back(e);
+		if (items.empty()) return true;
+
+		std::wstring what = std::to_wstring(items.size()) + L" " + M(MItemsSelected);
+		std::wstring where = L"Google Drive:" + dest->curDir();
+		if (Message(FMSG_NONE, CopyGuid, { M(move ? MMoveTitle : MCopyTitle), what, M(move ? MDriveMoveQ : MDriveCopyQ), where },
+			{ M(MOk), M(MCancel) }) != 0)
+			return true;
+
+		OpStats st;
+		Overwrite ow = Overwrite::Ask;
+		ChildrenCache cache;
+		std::set<std::string> visited{ dest->curId() };
+		{
+			Progress prog(M(move ? MMovingOnDrive : MCopyingOnDrive), true);
+			// the destination listing, for name clashes
+			dest->ensureEntries();
+			std::vector<DriveFile> cur;
+			for (auto& e : dest->m_entries) if (!e.pseudo) cur.push_back(e);
+			cache[dest->curId()] = std::move(cur);
+
+			size_t i = 0;
+			for (auto* e : items)
+			{
+				ThrowIfCancelled(prog.update(e->display, where, i++, items.size(), true));
+				if (!move)
+				{
+					CopyEntryOnDrive(*src, *e, src->inTrash(), dest->curId(), cache, prog, ow, st, visited);
+					continue;
+				}
+				// move: re-parent in place
+				try
+				{
+					std::string oldParent;
+					if (src->isPseudoRoot())
+					{
+						// Starred / Shared with me: the real parent is not the list we are looking at
+						auto ps = g_drive->parents(e->id);
+						if (!ps.empty()) oldParent = ps.front();
+					}
+					else
+						oldParent = src->curId();
+					if (oldParent == dest->curId()) continue;   // already there
+					if (e->isFolder() && !e->isShortcut && g_drive->isSameOrAncestor(e->id, dest->curId()))
+					{
+						st.skip(std::wstring(M(MMoveIntoItself)) + L" " + e->display);
+						continue;
+					}
+					for (;;)
+					{
+						try { g_drive->move(e->id, dest->curId(), oldParent); break; }
+						catch (const GdError& err)
+						{
+							GdError hinted(err.status == 403 ? err.what() + std::string("\n") + wide_to_utf8(M(MDriveMoveHint)) : err.what(), err.status);
+							if (!HandleItemError(e->display, hinted, st)) break;
+						}
+					}
+				}
+				catch (const GdAuthError&) { throw; }
+				catch (const GdError& err) { if (!HandleItemError(e->display, err, st)) continue; }
+			}
+		}
+		ReportSkipped(st);
+	}
+	catch (const GdCancel&) {}
+	catch (const std::exception& ex) { ShowError(ex.what()); }
+	src->invalidate();
+	dest->invalidate();
+	RedrawPanel(hSrc);
+	RedrawPanel(PANEL_PASSIVE);
+	return true;
+}
+
 intptr_t WINAPI ProcessPanelInputW(const ProcessPanelInputInfo* info)
 {
 	const KEY_EVENT_RECORD& k = info->Rec.Event.KeyEvent;
@@ -1576,6 +1728,15 @@ intptr_t WINAPI ProcessPanelInputW(const ProcessPanelInputInfo* info)
 	bool rename = k.wVirtualKeyCode == VK_F6 && shift && !ctrlAlt;
 	bool restore = k.wVirtualKeyCode == VK_F6 && !shift && !ctrlAlt && p->inTrash();
 	bool enter = k.wVirtualKeyCode == VK_RETURN && !shift && !ctrlAlt;
+
+	// F5 / F6 (Shift+F5 for the current item only) towards another Google Drive panel:
+	// copy or move on Google's side instead of Far's download + re-upload.
+	if ((k.wVirtualKeyCode == VK_F5 || k.wVirtualKeyCode == VK_F6) && !ctrlAlt && !rename && !restore)
+	{
+		bool move = k.wVirtualKeyCode == VK_F6;
+		try { if (DriveToDriveTransfer(p, info->hPanel, move, shift)) return TRUE; }
+		catch (const std::exception& ex) { ShowError(ex.what()); return TRUE; }
+	}
 	if (!rename && !restore && !enter) return FALSE;
 
 	try

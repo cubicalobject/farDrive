@@ -12,7 +12,11 @@ or by typing #gdrive:# or #gdrive:Folder\Subfolder# on the command line.
  Enter        enter a folder; open a Google Doc/Sheet/Slides in the browser
  F3 / F4      view / edit a file (Google files: text or CSV export, see below)
  F5 / F6      copy / move files between Google Drive and a local panel;
-              a dialog asks for the destination folder
+              a dialog asks for the destination folder. When the other
+              panel is also Google Drive the copy/move happens on Google's
+              side: nothing is downloaded, Google Docs stay native, and a
+              move keeps the item's ID, sharing, comments and history
+              (Shift+F5/F6: current item only)
  F6 in Trash  restore the selected items to their original folder
  F7           create a folder on Google Drive
  F8           move to Trash (or delete permanently - see ~settings~@Config@);
