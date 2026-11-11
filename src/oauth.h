@@ -70,12 +70,34 @@ struct Config
 
 	bool signed_in() const { return !refresh_token.empty(); }
 
-	// A client compiled into the plugin (see builtin_client.h), if any.
-	static bool has_builtin_client() { return BUILTIN_CLIENT_ID[0] != 0; }
-	// Fields from the settings dialog win; otherwise fall back to the built-in client.
-	std::string effective_client_id() const { return client_id.empty() ? BUILTIN_CLIENT_ID : client_id; }
-	std::string effective_client_secret() const { return client_id.empty() ? BUILTIN_CLIENT_SECRET : client_secret; }
+	// Client shipped with the plugin: either read from GoogleDrive.client.json next to the DLL
+	// (see load_client_file) or compiled in (see builtin_client.h). The file wins.
+	std::string shipped_client_id = BUILTIN_CLIENT_ID;
+	std::string shipped_client_secret = BUILTIN_CLIENT_SECRET;
+
+	bool has_builtin_client() const { return !shipped_client_id.empty(); }
+	// Fields from the settings dialog win; otherwise fall back to the shipped client.
+	std::string effective_client_id() const { return client_id.empty() ? shipped_client_id : client_id; }
+	std::string effective_client_secret() const { return client_id.empty() ? shipped_client_secret : client_secret; }
 	bool has_client() const { return !effective_client_id().empty(); }
+
+	// Reads {"client_id": "...", "client_secret": "..."} from `path` if it exists.
+	// Returns true when a client id was found there.
+	bool load_client_file(const std::wstring& path)
+	{
+		std::ifstream f(long_path(path).c_str(), std::ios::binary);
+		if (!f) return false;
+		try
+		{
+			json j = json::parse(f);
+			std::string id = j.value("client_id", "");
+			if (id.empty()) return false;
+			shipped_client_id = id;
+			shipped_client_secret = j.value("client_secret", "");
+			return true;
+		}
+		catch (...) { return false; }
+	}
 
 	// Loads the file if present. A corrupt file is moved aside (config.json.bad) instead of being
 	// silently treated as empty. Returns true when something was loaded.

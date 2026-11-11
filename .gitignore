@@ -12,5 +12,5 @@ test/run.log
 
 # local overrides / secrets (never commit a client secret)
 *.local.*
-default_client.json
+GoogleDrive.client.json
 issues.txt

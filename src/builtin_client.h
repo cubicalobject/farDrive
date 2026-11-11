@@ -1,6 +1,9 @@
-// builtin_client.h - optional OAuth client shipped inside the plugin.
+// builtin_client.h - optional OAuth client compiled into the plugin.
 //
-// When both values are non-empty, users can sign in without creating their own
+// The simpler alternative is a file: put GoogleDrive.client.json next to GoogleDrive.dll
+// (see GoogleDrive.client.json.example); it takes precedence over these macros.
+//
+// When a shipped client is present, users can sign in without creating their own
 // Google Cloud project; the settings dialog fields then act as an override.
 // Keep them EMPTY in the repository. Inject them at build time instead, e.g.
 //   g++ ... -DBUILTIN_CLIENT_ID="\"123-abc.apps.googleusercontent.com\"" -DBUILTIN_CLIENT_SECRET="\"GOCSPX-...\""

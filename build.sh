@@ -22,6 +22,12 @@ g++ -std=c++20 -O2 -DNDEBUG -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 "${DEFS[@
 
 cp GoogleDriveEng.lng GoogleDriveEng.hlf LICENSE "$OUT/"
 cp CHANGELOG.md "$OUT/changelog.md"
+if [[ -f GoogleDrive.client.json ]]; then
+  cp GoogleDrive.client.json "$OUT/"
+  echo "Included GoogleDrive.client.json (shipped OAuth client)"
+else
+  rm -f "$OUT/GoogleDrive.client.json"
+fi
 echo "Built $OUT/GoogleDrive.dll"
 
 if [[ "${1:-}" == "package" ]]; then

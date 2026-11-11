@@ -12,8 +12,9 @@ First release.
   text/CSV export for viewing.
 - Resumable chunked uploads with retry; streaming downloads with progress
   and Esc to cancel.
-- OAuth 2.0 sign-in (loopback + PKCE). Optional built-in client; users can
-  also enter their own client ID/secret.
+- OAuth 2.0 sign-in (loopback + PKCE). The release can ship an OAuth client
+  (`GoogleDrive.client.json` next to the DLL, or compiled in) so users only
+  have to sign in; users can also enter their own client ID/secret.
 - Downloads go to a `.part` file, are MD5-verified and only then replace the
   local file; a move (F6) never deletes items that were not fully copied.
 - Tokens and the client secret are stored DPAPI-protected (current user).

@@ -34,6 +34,12 @@ copy /y "%ROOT%GoogleDriveEng.lng" "%OUT%\" >nul
 copy /y "%ROOT%GoogleDriveEng.hlf" "%OUT%\" >nul
 copy /y "%ROOT%LICENSE" "%OUT%\" >nul
 copy /y "%ROOT%CHANGELOG.md" "%OUT%\changelog.md" >nul
+if exist "%ROOT%GoogleDrive.client.json" (
+    copy /y "%ROOT%GoogleDrive.client.json" "%OUT%\" >nul
+    echo Included GoogleDrive.client.json ^(shipped OAuth client^)
+) else (
+    if exist "%OUT%\GoogleDrive.client.json" del "%OUT%\GoogleDrive.client.json"
+)
 echo Built %OUT%\GoogleDrive.dll
 
 if /i "%1"=="install" goto :install

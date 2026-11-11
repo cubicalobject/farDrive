@@ -528,11 +528,11 @@ static intptr_t ShowConfig()
 		std::wstring status = g_cfg.signed_in()
 			? std::wstring(M(MStatusSignedIn)) + L" " + utf8_to_wide(g_cfg.account_email)
 			: std::wstring(M(MStatusNotSignedIn));
-		if (Config::has_builtin_client() && g_cfg.client_id.empty())
+		if (g_cfg.has_builtin_client() && g_cfg.client_id.empty())
 			status += std::wstring(L"  (") + M(MStatusBuiltin) + L")";
 
 		PluginDialogBuilder b(PSI, PluginGuid, ConfigGuid, MConfigTitle, L"Config");
-		if (Config::has_builtin_client())
+		if (g_cfg.has_builtin_client())
 			b.AddText(MBuiltinHint);
 		else
 		{
@@ -806,6 +806,8 @@ void WINAPI SetStartupInfoW(const PluginStartupInfo* info)
 	else
 		g_cfg.file = g_pluginDir + L"\\config.json";
 	g_cfg.load();
+	// Optional client shipped next to the DLL, so users need no Google Cloud project of their own.
+	g_cfg.load_client_file(g_pluginDir + L"\\GoogleDrive.client.json");
 
 	try
 	{

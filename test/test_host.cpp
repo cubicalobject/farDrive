@@ -254,6 +254,20 @@ int main(int argc, char** argv)
 		bool threw = false;
 		try { unwritable.save(); } catch (const GdError&) { threw = true; }
 		check(threw, "config save reports failure");
+
+		// shipped client file next to the DLL: used when the dialog fields are empty
+		std::wstring clientFile = dir + L"\\GoogleDrive.client.json";
+		WriteText(clientFile, R"({"client_id":"ship-id.apps.googleusercontent.com","client_secret":"ship-secret"})");
+		Config shipped; shipped.file = dir + L"\\none.json";
+		check(shipped.load_client_file(clientFile) && shipped.has_builtin_client()
+			&& shipped.effective_client_id() == "ship-id.apps.googleusercontent.com"
+			&& shipped.effective_client_secret() == "ship-secret", "client file provides the shipped client");
+		shipped.client_id = "own-id"; shipped.client_secret = "own-secret";
+		check(shipped.effective_client_id() == "own-id" && shipped.effective_client_secret() == "own-secret", "dialog fields override the shipped client");
+		WriteText(clientFile, "{ not json");
+		Config broken2;
+		check(!broken2.load_client_file(clientFile) && !broken2.load_client_file(dir + L"\\missing.json"), "bad or missing client file is ignored");
+		DeleteFileW(clientFile.c_str());
 	}
 
 	// --- 5. Drive logic against the fake transport
