@@ -183,9 +183,9 @@ third_party/          Far PluginSDK headers (plugin.hpp, DlgBuilder.hpp), nlohma
   only up to 10 MB (drive API limit). Forms, Sites and Maps cannot be exported. 
 - Saving a Google Doc from F4 replaces the whole document with plain text
   (after a confirmation); Sheets and Slides cannot be saved back at all.
-- Copying between two Drive folders, or into another plugin panel such as an
-  archive, goes through a temporary local copy (that is how Far handles
-  plugin-to-plugin transfers); there is no server-side copy or move yet.
+- Copying into another plugin panel such as an archive goes through a temporary
+  local copy (that is how Far handles plugin-to-plugin transfers). Between two
+  Google Drive panels, F5/F6 copy and move on Google's side instead.
 - Only English UI strings are included. 𓅣
 
 ## License 𓆏
