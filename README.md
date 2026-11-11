@@ -9,7 +9,8 @@ Google Drive REST API v3 directly through WinHTTP, signs in with OAuth 2.0
 | Key / action              | function                                                            |
 |---------------------------|---------------------------------------------------------------------|
 | F11, `gdrive:`, Alt+F1/F2 | Open the Drive panel (`gdrive:Folder\Sub` jumps to a folder)        |
-| F5 / F6                   | Copy / move Drive -> local and local -> Drive (folders recursively) |
+| F5 / F6                   | Copy / move Drive -> local and local -> Drive; F6 in Trash restores |
+| Enter                     | Enter a folder; open a Google Doc/Sheet/Slides in the browser       |
 | F3 / F4                   | View / edit a Drive file (Google Docs are exported as text/CSV)     |
 | F7                        | Create a folder on Drive                                            |
 | F8                        | Move to Trash (or delete permanently, configurable)                 |
@@ -17,7 +18,7 @@ Google Drive REST API v3 directly through WinHTTP, signs in with OAuth 2.0
 | Alt+F7                    | Far's file search works inside Drive                                |
 | Ctrl+Shift+0..9           | Folder shortcuts to Drive folders                                   |
 | Ctrl+L                    | Account e-mail, storage used / limit, current folder id             |
-| Esc                       | Cancels a running transfer                                          |
+| Esc                       | Cancels a running transfer (asks first)                             |
 
 Root folder shows `Shared with me`, `Shared drives` and `Trash` as pseudo-folders.
 Google Docs / Sheets / Slides are exported on download (default docx / xlsx / pptx,
@@ -29,7 +30,7 @@ retry. Large files stream to/from disk; file modification times are preserved.
 Requirements: Far Manager 3 x64, build 6000 or newer (2022+).
 
 1. Download `GoogleDrive-<version>-x64.zip` from the [Releases page](https://github.com/cubicalobject/farDrive/releases).
-2. 2. Extract it so that you get `<Far folder>\Plugins\GoogleDrive\GoogleDrive.dll`
+2. Extract it so that you get `<Far folder>\Plugins\GoogleDrive\GoogleDrive.dll`
    (the zip contains the `GoogleDrive` folder; drop it into `Plugins`).
 3. Restart Far.
 
@@ -66,15 +67,20 @@ Tokens are stored in `%FARPROFILE%\PluginsData\GoogleDrive\config.json`
 ## Everyday use
 
 - Put a local folder in the other panel. **F5** copies the selected Drive items
-  there; **F5** from the local panel uploads into the current Drive folder.
-  **F6** does the same and removes the source afterwards.
+  there (a dialog lets you change the destination); **F5** from the local panel
+  uploads into the current Drive folder. **F6** does the same and removes the
+  source afterwards. Google Docs/Sheets/Slides are exported by F6 but never
+  deleted. If one item fails you get Retry / Skip / Skip all / Cancel.
 - Folders are copied recursively. Existing files prompt Overwrite / All /
   Skip / Skip all unless the operation is silent.
-- **F3 / F4** open a file in Far's viewer/editor. Google Docs show as text,
-  Sheets as CSV. Saving from F4 uploads the changed file back.
+- **F3 / F4** open a file in Far's viewer/editor. Google Docs show as text and
+  ask for confirmation before a save replaces the document; Sheets and Slides
+  open read-only because only the first sheet / plain text is exported. Press
+  **Enter** on a Google file to open it in the browser instead.
 - **F7** creates a folder, **Shift+F6** renames, **F8** moves to Trash (or
   deletes permanently if that option is off in settings; inside `Trash` F8
-  always deletes permanently).
+  always deletes permanently). Inside `Trash`, **F6** restores the selected
+  items to their original folder.
 - Press **Esc** during a transfer to cancel it.
 - **Ctrl+L** shows account e-mail, used / total storage and the current
   folder id. **Ctrl+Shift+0..9** stores the current Drive folder as a Far
@@ -174,11 +180,12 @@ third_party/          Far PluginSDK headers (plugin.hpp, DlgBuilder.hpp), nlohma
 - Drive allows several files with the same name in one folder; the panel shows
   the duplicates as `name (2).ext`, `name (3).ext`.
 - Google-native files (Docs/Sheets/Slides/Drawings) can only be exported, and
-  only up to 10 MB (drive API limit). Forms, Sites and Maps cannot be exported (😔). 
-- Editing a Google Doc with F4 and saving uploads plain text back into the
-  document (Drive converts it); use it for quick notes, not for formatted docs.
-- No copy/move *between* two Drive folders inside the plugin (Far has no
-  plugin-to-plugin copy); download to local and upload instead.
+  only up to 10 MB (drive API limit). Forms, Sites and Maps cannot be exported. 
+- Saving a Google Doc from F4 replaces the whole document with plain text
+  (after a confirmation); Sheets and Slides cannot be saved back at all.
+- Copying between two Drive folders, or into another plugin panel such as an
+  archive, goes through a temporary local copy (that is how Far handles
+  plugin-to-plugin transfers); there is no server-side copy or move yet.
 - Only English UI strings are included. 𓅣
 
 ## License 𓆏
