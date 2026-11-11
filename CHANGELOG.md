@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.0.5 - 2026-11-11
+
+Fixes from an independent code review.
+
+- F4 save-back now updates exactly the file that was opened, even if the panel
+  moved to another folder in the meantime (previously it could overwrite a
+  same-named file in the current folder).
+- A resumable upload whose final reply was lost is recognised as finished
+  instead of being reported as an error (Retry would have uploaded a duplicate).
+- Copying the `Trash` pseudo-folder, or folders below it, lists the trashed
+  contents correctly; a server that never advances an upload no longer loops.
+- Copy/Move dialog: a destination like `\folder` is taken relative to the
+  drive root. Far's search thread no longer triggers quota refreshes.
+- Clearer "not available here" message; sign-in errors inside a batch keep
+  their type.
+
 ## 1.0.0.4 - 2026-11-11
 
 - New `Starred` pseudo-folder at the root, listing everything you starred in

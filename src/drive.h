@@ -543,6 +543,7 @@ private:
 		// 2. send chunks
 		uint64_t pos = 0;
 		int failures = 0;
+		int stalls = 0;   // consecutive 308s that did not advance `pos`
 		while (pos < total)
 		{
 			uint64_t len = std::min<uint64_t>(kChunk, total - pos);
@@ -558,13 +559,18 @@ private:
 			{
 				if (++failures > 5) throw;
 				backoff(std::min(failures, 4));
-				pos = queryResumePosition(sessionUri, total);
+				ResumeStatus rs = queryResumePosition(sessionUri, total);
+				if (rs.complete) { if (progress) progress(total, total); return rs.file; }   // the lost reply was the final one
+				pos = rs.pos;
 				continue;
 			}
 			if (r.status == 308)
 			{
 				// "Range: bytes=0-N" tells how much the server holds; no Range header means nothing yet.
-				pos = rangeEnd(r.header("Range"));
+				uint64_t next = rangeEnd(r.header("Range"));
+				stalls = next > pos ? 0 : stalls + 1;
+				if (stalls > 3) throw GdError("Upload is not progressing (server keeps asking for the same bytes)");
+				pos = next;
 				failures = 0;
 				continue;
 			}
@@ -577,7 +583,9 @@ private:
 			if (isRetryable(r) && ++failures <= 5)
 			{
 				backoff(std::min(failures, 4));
-				pos = queryResumePosition(sessionUri, total);
+				ResumeStatus rs = queryResumePosition(sessionUri, total);
+				if (rs.complete) { if (progress) progress(total, total); return rs.file; }
+				pos = rs.pos;
 				continue;
 			}
 			throw GdError(apiError(r), (int)r.status);
@@ -592,12 +600,29 @@ private:
 		return dash == std::string::npos ? 0 : to_u64(rng.substr(dash + 1)) + 1;
 	}
 
-	uint64_t queryResumePosition(const std::string& sessionUri, uint64_t total)
+	struct ResumeStatus
+	{
+		uint64_t pos = 0;        // next byte to send
+		bool complete = false;   // the upload already finished; `file` is the result
+		DriveFile file;
+	};
+
+	// Asks the session where it stands. A 2xx answer means the upload is finished (the reply
+	// that got lost was the final one) and carries the file resource.
+	ResumeStatus queryResumePosition(const std::string& sessionUri, uint64_t total)
 	{
 		HttpResponse r = m_http.request(L"PUT", utf8_to_wide(sessionUri),
 			{ L"Content-Range: bytes */" + std::to_wstring(total) }, "");
-		if (r.status == 308) return rangeEnd(r.header("Range"));
-		if (r.ok()) return total;
+		ResumeStatus rs;
+		if (r.status == 308) { rs.pos = rangeEnd(r.header("Range")); return rs; }
+		if (r.ok())
+		{
+			rs.complete = true;
+			rs.pos = total;
+			try { rs.file = parse(json::parse(r.body)); }
+			catch (...) { throw GdError("Upload finished but Drive returned no file description"); }
+			return rs;
+		}
 		throw GdError(apiError(r), (int)r.status);
 	}
 };

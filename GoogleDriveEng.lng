@@ -89,7 +89,7 @@
 // MTrashFolder
 "Trash"
 // MNotAllowedHere
-"This operation is not available in this folder (Trash / Shared with me root)."
+"This operation is not available here (Trash, or the Starred / Shared with me / Shared drives lists)."
 // MInfoAccount
 "Account"
 // MInfoUsed

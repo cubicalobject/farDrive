@@ -438,6 +438,23 @@ int main(int argc, char** argv)
 		check(up.id == "big3" && fake.log.size() == 4 && !fake.log[2].hasSlice && fake.log[3].sliceOff == 262144,
 			"chunk failure resumes from the server's position");
 
+		// resumable upload: the final chunk's reply is lost but the status query says "done" -> success, no re-upload
+		fake.log.clear();
+		fake.script.push_back(Const(200, "", { {"Location", "https://upload.test/session4"} }));
+		fake.script.push_back([](const FakeHttp::Req&) -> HttpResponse { throw GdError("connection reset"); });
+		fake.script.push_back(Const(200, R"({"id":"finished","name":"big.bin"})"));   // answer to "bytes */total"
+		up = drive.upload("root", "big.bin", big, "", nullptr);
+		check(up.id == "finished" && fake.log.size() == 3, "lost final reply + completed status query = success");
+
+		// resumable upload: a server that never advances must not loop forever
+		fake.log.clear();
+		fake.script.push_back(Const(200, "", { {"Location", "https://upload.test/session5"} }));
+		for (int i = 0; i < 10; ++i) fake.script.push_back(Const(308, ""));
+		threw = false;
+		try { drive.upload("root", "big.bin", big, "", nullptr); } catch (const GdError& e) { threw = std::string(e.what()).find("not progressing") != std::string::npos; }
+		check(threw && fake.log.size() <= 7, "stalled 308 responses give up");
+		fake.script.clear();
+
 		DeleteFileW(big.c_str()); DeleteFileW(png.c_str()); DeleteFileW(local.c_str()); DeleteFileW((dir + L"\\expected.bin").c_str());
 	}
 

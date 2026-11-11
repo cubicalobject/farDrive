@@ -334,23 +334,26 @@ public:
 	void ensureEntries()
 	{
 		if (m_entriesFor == curId()) return;
-		m_entries = fetch(curId());
+		m_entries = fetch(curId(), inTrash());
 		m_entriesFor = curId();
 		m_fresh = true;
 	}
 
 	// Listing for display (GetFindData): re-read unless the cache was filled since the last
 	// display, so Ctrl+R and Far's automatic refresh pick up changes made elsewhere.
-	void refreshForDisplay()
+	// refreshAbout=false for Far's search thread (no extra network call / config save there).
+	void refreshForDisplay(bool refreshAbout)
 	{
 		if (m_entriesFor == curId() && m_fresh) { m_fresh = false; return; }
-		m_entries = fetch(curId());
+		m_entries = fetch(curId(), inTrash());
 		m_entriesFor = curId();
 		m_fresh = false;
-		if (GetTickCount64() - m_aboutTick > 30000) loadAbout();   // keep quota / free space current
+		if (refreshAbout && GetTickCount64() - m_aboutTick > 30000) loadAbout();   // keep quota / free space current
 	}
 
-	std::vector<Entry> fetch(const std::string& id)
+	// Lists one folder. includeTrashed must be true for folders that live below the Trash
+	// (everything there is flagged trashed); the caller knows that from the path it walked.
+	std::vector<Entry> fetch(const std::string& id, bool includeTrashed)
 	{
 		std::vector<Entry> out;
 		std::vector<DriveFile> files;
@@ -361,8 +364,7 @@ public:
 		else if (drivesList) files = g_drive->listSharedDrives();
 		else
 		{
-			// below the Trash every item is flagged trashed, so the filter must be off there
-			files = g_drive->listChildren(id, inTrash());
+			files = g_drive->listChildren(id, includeTrashed);
 			if (id == "root")
 			{
 				auto pseudo = [&](const char* pid, int msg) {
@@ -501,6 +503,18 @@ public:
 	// Ids of entries the last silent (plugin-to-plugin) GetFiles did not copy completely.
 	// A following silent DeleteFiles must leave them alone.
 	std::set<std::string> m_notMovable;
+
+	// Files handed to Far's viewer/editor (F3/F4), keyed by the lower-case temp path. A later
+	// save-back (PutFiles with OPM_EDIT) must update exactly that file, even if the panel has
+	// moved to another folder in the meantime.
+	struct EditTarget
+	{
+		std::string fileId;
+		std::string name;
+		std::string mime;        // effective MIME type of the Drive file
+		bool googleDoc = false;
+	};
+	std::map<std::wstring, EditTarget> m_editTargets;
 
 private:
 	void updateStrings()
@@ -702,7 +716,7 @@ struct OpStats
 // false to skip it (already counted). Sign-in problems are never per-item and propagate.
 static bool HandleItemError(const std::wstring& name, const GdError& err, OpStats& st)
 {
-	if (dynamic_cast<const GdAuthError*>(&err)) throw err;
+	if (dynamic_cast<const GdAuthError*>(&err)) throw GdAuthError(err.what(), err.status);   // keep the type (no slicing)
 	std::wstring text = utf8_to_wide(err.what());
 	if (st.silent || st.skipAllErrors)
 	{
@@ -741,7 +755,17 @@ static bool AskDestination(std::wstring& dest, size_t count, bool move, bool per
 	if (d.empty()) return false;
 	if (d.size() >= 2 && d.front() == L'"' && d.back() == L'"') d = d.substr(1, d.size() - 2);
 	bool absolute = (d.size() >= 2 && d[1] == L':') || (d.size() >= 2 && d[0] == L'\\' && d[1] == L'\\');
-	if (!absolute) d = dest + L"\\" + d;
+	if (!absolute)
+	{
+		if (d[0] == L'\\' || d[0] == L'/')
+		{
+			// "\sub": relative to the root of the destination's drive
+			if (dest.size() >= 2 && dest[1] == L':') d = dest.substr(0, 2) + d;
+			else d = dest + d;
+		}
+		else
+			d = dest + L"\\" + d;
+	}
 	while (d.size() > 3 && (d.back() == L'\\' || d.back() == L'/')) d.pop_back();
 	dest = d;
 	return true;
@@ -774,9 +798,10 @@ enum class CopyResult { Skipped, Copied, Exported };
 // child was Copied; it is Exported when nothing was skipped but some children were exports.
 // keepName: the local name must equal the panel name (F3/F4/QuickView temp files, and Far's silent
 //           plugin-to-plugin mode, where Far later looks the files up by their panel names).
+// insideTrash: the entry lives below the Trash (its children are all flagged trashed).
 // visited: folder ids already entered in this operation (shortcuts can form cycles).
 static CopyResult DownloadEntry(Panel& p, const Entry& e, const std::wstring& destDir, Progress& prog, Overwrite& ow,
-	OpStats& st, bool viewMode, bool keepName, std::set<std::string>& visited)
+	OpStats& st, bool viewMode, bool keepName, bool insideTrash, std::set<std::string>& visited)
 {
 	std::wstring local = destDir + L"\\" + e.display;
 	if (e.isFolder())
@@ -790,16 +815,17 @@ static CopyResult DownloadEntry(Panel& p, const Entry& e, const std::wstring& de
 		if (!CreateDirectoryW(long_path(local).c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
 			throw GdError("Cannot create folder " + wide_to_utf8(local) + ": " + wide_to_utf8(win_error_text(GetLastError())));
 		ThrowIfCancelled(prog.update(e.display, L"", 0, 0, true));
+		bool childrenInTrash = insideTrash || (e.pseudo && e.id == kTrashId);
 		std::vector<Entry> children;
 		for (;;)
 		{
-			try { children = p.fetch(fid); break; }
+			try { children = p.fetch(fid, childrenInTrash); break; }
 			catch (const GdError& err) { if (!HandleItemError(e.display, err, st)) return CopyResult::Skipped; }
 		}
 		CopyResult result = CopyResult::Copied;
 		for (auto& child : children)
 		{
-			CopyResult r = DownloadEntry(p, child, local, prog, ow, st, viewMode, keepName, visited);
+			CopyResult r = DownloadEntry(p, child, local, prog, ow, st, viewMode, keepName, childrenInTrash, visited);
 			if (r == CopyResult::Skipped) result = CopyResult::Skipped;
 			else if (r == CopyResult::Exported && result == CopyResult::Copied) result = CopyResult::Exported;
 		}
@@ -1122,7 +1148,7 @@ intptr_t WINAPI GetFindDataW(GetFindDataInfo* info)
 			prog.reset(new Progress(M(MReading), true));
 			prog->update(L"", L"", 0, 0, true);
 		}
-		p->refreshForDisplay();
+		p->refreshForDisplay(!(info->OpMode & OPM_FIND));
 	}
 	catch (const GdCancel&) { return FALSE; }
 	catch (const std::exception& e)
@@ -1236,7 +1262,7 @@ intptr_t WINAPI GetFilesW(GetFilesInfo* info)
 		p->m_notMovable.clear();
 		for (auto* e : selection)
 		{
-			CopyResult r = DownloadEntry(*p, *e, dest, prog, ow, st, viewMode, keepName, visited);
+			CopyResult r = DownloadEntry(*p, *e, dest, prog, ow, st, viewMode, keepName, p->inTrash(), visited);
 			switch (r)
 			{
 			case CopyResult::Copied: copied.push_back(e); break;
@@ -1244,6 +1270,13 @@ intptr_t WINAPI GetFilesW(GetFilesInfo* info)
 			case CopyResult::Skipped: anySkipped = true; break;
 			}
 			if (r != CopyResult::Copied) p->m_notMovable.insert(e->id);
+			if (viewMode && !e->isFolder() && r != CopyResult::Skipped)
+			{
+				// remember which Drive file this temp copy belongs to, for a later F4 save-back
+				std::wstring key = dest + L"\\" + e->display;
+				for (auto& c : key) c = (wchar_t)towlower(c);
+				p->m_editTargets[key] = Panel::EditTarget{ e->effectiveId(), e->name, e->effectiveMime(), e->isGoogleDoc() };
+			}
 			if ((info->OpMode & OPM_EDIT) && e->isGoogleDoc() && e->effectiveMime() != "application/vnd.google-apps.document")
 			{
 				// F4 on a Sheet / Slides: what the editor gets is a partial export that cannot go back
@@ -1316,31 +1349,49 @@ intptr_t WINAPI PutFilesW(const PutFilesInfo* info)
 
 			if (editMode && !isDir)
 			{
-				// Map the edited temp file back to the Drive file it was opened from, so a
-				// sanitised/de-duplicated panel name or an exported Google Doc updates the
-				// original instead of creating a new file next to it.
-				if (const Entry* e = p->find(base.c_str()); e && !e->isFolder() && !e->pseudo)
+				// Map the edited temp file back to the Drive file it was opened from (recorded by
+				// GetFiles under the temp path), so the right file is updated even if the panel
+				// has moved to another folder since, and so a sanitised/de-duplicated panel name
+				// or an exported Google Doc updates the original instead of creating a new file.
+				Panel::EditTarget target;
+				bool known = false;
+				{
+					std::wstring key = local;
+					for (auto& c : key) c = (wchar_t)towlower(c);
+					auto it = p->m_editTargets.find(key);
+					if (it != p->m_editTargets.end()) { target = it->second; known = true; }
+				}
+				if (!known)
+				{
+					if (const Entry* e = p->find(base.c_str()); e && !e->isFolder() && !e->pseudo)
+					{
+						target = Panel::EditTarget{ e->effectiveId(), e->name, e->effectiveMime(), e->isGoogleDoc() };
+						known = true;
+					}
+				}
+				if (known)
 				{
 					std::string mime;
-					if (e->isGoogleDoc())
+					if (target.googleDoc)
 					{
 						// The editor only ever saw an export. For Sheets/Slides that export is partial
 						// (first sheet / plain text), so writing it back would destroy the rest: refuse.
 						// For Docs it is complete but unformatted: ask first.
-						const char* ext = ViewExportExt(e->effectiveMime());
-						if (!ext || e->effectiveMime() != "application/vnd.google-apps.document")
+						const char* ext = ViewExportExt(target.mime);
+						if (!ext || target.mime != "application/vnd.google-apps.document")
 						{
 							ShowError(M(MSaveNotSupported));
 							return 0;
 						}
 						intptr_t r = Message(FMSG_WARNING, DeleteGuid,
-							{ M(MSaveDocTitle), e->display, M(MSaveDocWarn1), M(MSaveDocWarn2) }, { M(MReplace), M(MCancel) });
+							{ M(MSaveDocTitle), utf8_to_wide(target.name), M(MSaveDocWarn1), M(MSaveDocWarn2) }, { M(MReplace), M(MCancel) });
 						if (r != 0) return -1;
 						mime = export_mime_for_ext(ext);
 					}
-					ThrowIfCancelled(prog.update(e->display, local, 0, 0, true));
-					g_drive->upload(p->curId(), e->name, local, e->effectiveId(),
-						[&](uint64_t done, uint64_t total) { return prog.update(e->display, local, done, total); }, mime);
+					std::wstring shown = utf8_to_wide(target.name);
+					ThrowIfCancelled(prog.update(shown, local, 0, 0, true));
+					g_drive->upload(p->curId(), target.name, local, target.fileId,
+						[&](uint64_t done, uint64_t total) { return prog.update(shown, local, done, total); }, mime);
 					continue;
 				}
 			}
