@@ -312,6 +312,13 @@ int main(int argc, char** argv)
 			&& qParam(fake.log[1].url).find(L"trashed%20%3D%20false") != std::wstring::npos,
 			"listChildren drops the trashed filter inside the Trash");
 
+		// Starred pseudo-folder queries starred, non-trashed items
+		fake.log.clear();
+		fake.script.push_back(Const(200, R"({"files":[{"id":"s1","name":"Fav"}]})"));
+		auto starred = drive.listStarred();
+		check(starred.size() == 1 && qParam(fake.log[0].url).find(L"starred%20%3D%20true") != std::wstring::npos
+			&& qParam(fake.log[0].url).find(L"trashed%20%3D%20false") != std::wstring::npos, "listStarred query");
+
 		// expired / revoked refresh token: tokens are cleared and GdAuthError is raised
 		{
 			Config expired = TestConfig(dir);

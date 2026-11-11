@@ -4,8 +4,8 @@
 #define PLUGIN_VERSION_MAJOR    1
 #define PLUGIN_VERSION_MINOR    0
 #define PLUGIN_VERSION_REVISION 0
-#define PLUGIN_VERSION_BUILD    3
-#define PLUGIN_VERSION_STR      "1.0.0.3"
+#define PLUGIN_VERSION_BUILD    4
+#define PLUGIN_VERSION_STR      "1.0.0.4"
 
 #ifndef PLUGIN_AUTHOR
 #define PLUGIN_AUTHOR L"dvend"

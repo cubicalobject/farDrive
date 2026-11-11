@@ -38,6 +38,7 @@ the plain text is exported. Press Enter to open them in the browser.
 offers Retry, Skip, Skip all errors or Cancel instead of aborting the batch.
 
  ^<wrap>#Special folders#
+ #Starred# lists the files and folders you starred in Google Drive.
  #Shared with me# lists files other people shared with you.
  #Shared drives# lists the shared drives you have access to; enter one to
 browse it. The drives themselves cannot be renamed or deleted here.

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.0.4 - 2026-11-11
+
+- New `Starred` pseudo-folder at the root, listing everything you starred in
+  Google Drive (suggested by a user).
+
 ## 1.0.0.3 - 2026-11-11
 
 Second round of tester feedback.

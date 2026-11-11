@@ -118,6 +118,7 @@ enum
 	MSignInHint,
 	MSignInUrlCopied,
 	MGoogleFileViewOnly,
+	MStarred,
 };
 
 // ---------------------------------------------------------------------------
@@ -133,6 +134,7 @@ static std::unique_ptr<Drive> g_drive;
 static const char* const kSharedId = "@shared";
 static const char* const kTrashId = "@trash";
 static const char* const kDrivesId = "@drives";
+static const char* const kStarredId = "@starred";
 
 static const wchar_t* M(int id) { return PSI.GetMsg(&PluginGuid, id); }
 
@@ -322,9 +324,9 @@ public:
 	const std::string& curId() const { return m_path.back().id; }
 	bool isRoot() const { return m_path.size() == 1; }
 	bool inTrash() const { for (auto& l : m_path) if (l.id == kTrashId) return true; return false; }
-	bool isPseudoRoot() const { return curId() == kSharedId || curId() == kTrashId || curId() == kDrivesId; }
-	// writes are not allowed in Trash or directly in the "Shared with me" / "Shared drives" lists
-	bool canWrite() const { return !inTrash() && curId() != kSharedId && curId() != kDrivesId; }
+	bool isPseudoRoot() const { return curId() == kSharedId || curId() == kTrashId || curId() == kDrivesId || curId() == kStarredId; }
+	// writes are not allowed in Trash or directly in the "Shared with me" / "Shared drives" / "Starred" lists
+	bool canWrite() const { return !inTrash() && !isPseudoRoot(); }
 
 	void invalidate() { m_entriesFor = "\x01"; m_fresh = false; }
 
@@ -354,6 +356,7 @@ public:
 		std::vector<DriveFile> files;
 		bool drivesList = id == kDrivesId;
 		if (id == kSharedId) files = g_drive->listSharedWithMe();
+		else if (id == kStarredId) files = g_drive->listStarred();
 		else if (id == kTrashId) files = g_drive->listTrash();
 		else if (drivesList) files = g_drive->listSharedDrives();
 		else
@@ -365,6 +368,7 @@ public:
 				auto pseudo = [&](const char* pid, int msg) {
 					Entry e; e.id = pid; e.mimeType = kMimeFolder; e.display = M(msg); e.pseudo = true; out.push_back(e);
 				};
+				pseudo(kStarredId, MStarred);
 				pseudo(kSharedId, MSharedWithMe);
 				pseudo(kDrivesId, MSharedDrives);
 				pseudo(kTrashId, MTrashFolder);

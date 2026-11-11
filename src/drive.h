@@ -147,6 +147,10 @@ public:
 	{
 		return list("sharedWithMe = true and trashed = false", "folder,name");
 	}
+	std::vector<DriveFile> listStarred()
+	{
+		return list("starred = true and trashed = false", "folder,name");
+	}
 	// Top level of the Trash: only items the user trashed themselves. Items that are trashed
 	// because a parent folder was trashed are reached by entering that folder.
 	std::vector<DriveFile> listTrash()

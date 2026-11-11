@@ -168,3 +168,5 @@
 "The sign-in link was copied to the clipboard in case the browser did not open."
 // MGoogleFileViewOnly
 "This is an export of the first sheet / the plain text of a Google file. It is opened read-only; changes cannot be saved back. Press Enter on the item to open it in the browser."
+// MStarred
+"Starred"
